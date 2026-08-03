@@ -1,0 +1,9 @@
+{
+  "name": "hamakom-distribute",
+  "version": "0.1.0",
+  "description": "הפצה בלחיצה — כתבה פורסמה ב-ha-makom ← תיקיית הפצה מלאה בדסקטופ: גרפיקות מעוצבות (וואטסאפ/פיד/סטורי), קרוסלת אינסטגרם, בריף ריל, וקופי מותאם לכל פלטפורמה לפי ה-DNA האמיתי של @ha_makom. רינדור headless בעיצוב HaMakom DS 2026, בלי Figma ובלי ידיים.",
+  "author": {
+    "name": "Dor Zommer / Ha-Makom",
+    "email": "zommerd@gmail.com"
+  }
+}

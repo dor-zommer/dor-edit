@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ליינאפ שבועי — המקום הכי חם בגיהנום</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Suez+One&family=IBM+Plex+Sans+Hebrew:wght@400;500;600;700&display=swap');
+  :root{ color-scheme:light; --bg:#faf9f5; --card:#ffffff; --ink:#141413; --muted:#6f6d64; --line:#e8e6dc;
+         --accent:#d97757; --pub:#788c5d; --pubbg:#eef1e7; --wip:#8e6fa8; --wipbg:#efeaf5;
+         --idea:#d97757; --ideabg:#f9ebe5; --amber:#b4710c; --amberbg:#fbf1e2; --red:#d97757; }
+  *{ box-sizing:border-box; }
+  body{ font-family:"IBM Plex Sans Hebrew","Heebo","Assistant","Segoe UI",system-ui,Arial,sans-serif; color:var(--ink); background:transparent; margin:0; padding:6px 2px 22px; }
+  h1,h2,h3{ font-family:"Suez One","Heebo",Georgia,serif; }
+  header{ display:flex; align-items:flex-end; justify-content:space-between; gap:14px; flex-wrap:wrap; margin-bottom:14px; }
+  h1{ font-size:19px; margin:0; font-weight:800; }
+  .sub{ color:var(--muted); font-size:13px; margin-top:4px; }
+  .filters{ display:flex; gap:8px; }
+  .chip{ display:inline-flex; align-items:center; gap:6px; font-size:13px; border:1px solid var(--line); background:var(--card);
+         padding:6px 11px; border-radius:999px; cursor:pointer; user-select:none; }
+  .chip.pub b{ color:var(--pub); } .chip.wip b{ color:var(--wip); }
+  .nav{ display:flex; align-items:center; gap:6px; margin-bottom:12px; }
+  .nav button{ font-family:inherit; font-size:13px; border:1px solid var(--line); background:var(--card); color:var(--ink);
+               padding:6px 12px; border-radius:8px; cursor:pointer; }
+  .nav button:hover{ border-color:#cfc9c0; }
+  .nav #cur{ font-weight:700; }
+  .nav .range{ color:var(--muted); font-size:12px; margin-inline-start:6px; }
+  .grid{ display:flex; flex-direction:row; gap:0; overflow-x:auto; padding-bottom:8px; border:1px solid var(--line); border-radius:12px; background:var(--card); }
+  .grid::-webkit-scrollbar{ height:8px; } .grid::-webkit-scrollbar-thumb{ background:var(--line); border-radius:8px; }
+  .col{ flex:1 1 0; min-width:185px; padding:8px; border-inline-start:1px solid var(--line); }
+  .col:first-child{ border-inline-start:none; }
+  .col.today{ background:#fff6f2; }
+  .colh{ text-align:center; font-size:12px; color:var(--muted); padding:5px 2px 8px; border-bottom:2px solid var(--line); margin-bottom:9px; }
+  .colh b{ display:block; font-size:14px; color:var(--ink); font-weight:700; }
+  .colh.today{ border-bottom-color:var(--red); } .colh.today b{ color:var(--red); }
+  .card{ background:var(--bg); border:1px solid var(--line); border-radius:11px; padding:9px 10px; margin-bottom:9px; cursor:grab; }
+  .card:active{ cursor:grabbing; } .card.dragging{ opacity:.45; }
+  .col.dropok{ background:#eef7f0; box-shadow:inset 0 0 0 2px var(--pub); border-radius:8px; }
+  #toast{ position:fixed; inset-inline-start:50%; bottom:18px; transform:translateX(50%); background:#1b1a18; color:#fff;
+          font-size:13px; padding:8px 14px; border-radius:999px; opacity:0; transition:opacity .2s; pointer-events:none; z-index:9; }
+  #toast.show{ opacity:.95; }
+  .nav #addBtn{ background:var(--red); color:#fff; border-color:var(--red); font-weight:700; margin-inline-start:auto; }
+  #modal{ position:fixed; inset:0; background:rgba(27,26,24,.45); display:flex; align-items:center; justify-content:center; z-index:8; }
+  #modal[hidden]{ display:none; }
+  .mbox{ background:#fff; border-radius:14px; padding:18px; width:min(420px,92vw); box-shadow:0 12px 40px rgba(0,0,0,.18); }
+  .mbox h2{ font-size:15px; margin:0 0 12px; font-weight:800; }
+  .mbox input[type=text], .mbox textarea{ width:100%; font-family:inherit; font-size:13px; border:1px solid var(--line);
+        border-radius:9px; padding:8px 10px; margin-bottom:9px; background:#fff; color:var(--ink); }
+  .mrow{ display:flex; gap:7px; margin-bottom:12px; flex-wrap:wrap; }
+  .mrow select, .mrow input[type=date]{ font-family:inherit; font-size:12px; border:1px solid var(--line); border-radius:8px;
+        padding:6px 8px; background:#fff; color:var(--ink); flex:1; min-width:110px; }
+  .mact{ display:flex; gap:8px; justify-content:flex-start; }
+  .mact button{ font-family:inherit; font-size:13px; border:1px solid var(--line); background:#fff; color:var(--ink);
+        padding:7px 16px; border-radius:9px; cursor:pointer; }
+  .mact .primary{ background:var(--red); color:#fff; border-color:var(--red); font-weight:700; }
+  .mact .primary:disabled{ opacity:.55; }
+  .card a{ color:var(--ink); text-decoration:none; font-weight:600; font-size:12.5px; line-height:1.4; display:block; }
+  .card a:hover{ text-decoration:underline; }
+  .meta{ color:var(--muted); font-size:11px; margin-top:7px; display:flex; gap:5px; flex-wrap:wrap; align-items:center; }
+  .meta select{ font-family:inherit; font-size:10.5px; border:1px solid var(--line); border-radius:7px; background:#fff;
+                color:var(--ink); padding:2px 5px; cursor:pointer; max-width:104px; }
+  .meta select.selStatus{ font-weight:700; }
+  .meta .typ{ font-size:10.5px; }
+  .pill{ font-size:10px; font-weight:700; padding:1px 8px; border-radius:999px; white-space:nowrap; }
+  .pill.pub{ color:var(--pub); background:var(--pubbg); }
+  .pill.wip{ color:var(--wip); background:var(--wipbg); }
+  .pill.idea{ color:var(--idea); background:var(--ideabg); }
+  .pill.ready{ color:var(--amber); background:var(--amberbg); }
+  .card{ border-inline-start-width:3px; }
+  .card.pub{ border-inline-start-color:var(--pub); }
+  .card.wip{ border-inline-start-color:var(--wip); }
+  .card.idea{ border-inline-start-color:var(--idea); }
+  .chip.idea b{ color:var(--idea); }
+  .empty{ color:#cfcac2; font-size:11px; text-align:center; padding:12px 0; }
+  footer{ color:var(--muted); font-size:11px; margin-top:14px; }
+</style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>ליינאפ שבועי — המקום הכי חם בגיהנום</h1>
+      <div class="sub" id="sub">טוען מנושן…</div>
+    </div>
+    <div class="filters">
+      <label class="chip pub"><input type="checkbox" id="fPub" checked> פורסם <b id="cPub">0</b></label>
+      <label class="chip wip"><input type="checkbox" id="fWip" checked> בעבודה <b id="cWip">0</b></label>
+      <label class="chip idea"><input type="checkbox" id="fIdea" checked> רעיונות <b id="cIdea">0</b></label>
+    </div>
+  </header>
+  <div class="nav">
+    <button id="prev">‹ שבוע קודם</button>
+    <button id="cur">השבוע</button>
+    <button id="next">שבוע הבא ›</button>
+    <span class="range" id="range"></span>
+    <button id="addBtn">+ רעיון חדש</button>
+  </div>
+  <div id="modal" hidden>
+    <div class="mbox">
+      <h2>רעיון / תחקיר חדש — נפתח ישירות בנושן</h2>
+      <input type="text" id="mName" placeholder="שם האייטם / הרעיון *">
+      <textarea id="mDesc" rows="3" placeholder="תקציר — מה הסיפור, מקור, למה חשוב (לא חובה)"></textarea>
+      <div class="mrow">
+        <select id="mWriter"><option value="">— כתב/ת —</option></select>
+        <select id="mType"><option value="">— סוג —</option></select>
+        <input type="date" id="mDate" title="תאריך יעד (לא חובה)">
+      </div>
+      <div class="mact">
+        <button id="mSave" class="primary">פתח בנושן</button>
+        <button id="mCancel">ביטול</button>
+      </div>
+    </div>
+  </div>
+  <div class="grid" id="grid"></div>
+  <footer id="foot"></footer>
+  <div id="toast"></div>
+<script>
+const TOOL='mcp__d7ee54d7-455a-4c81-8220-bac43154f6cf__notion-query-database-view';
+const UPDATE='mcp__d7ee54d7-455a-4c81-8220-bac43154f6cf__notion-update-page';
+const CREATE='mcp__d7ee54d7-455a-4c81-8220-bac43154f6cf__notion-create-pages';
+const DS='11ff4e8f-1d5f-45ed-b1c9-ddea01ba4cb0';
+const DOR='["user://4fb1812b-9d58-4767-b010-651ca6c704df"]';
+const VIEW='https://www.notion.so/51e84ef1acde4109807e99c68a6765c9?v=48f6afd6ea0d4810a762ecc668206efb';
+const DOW=['ראשון','שני','שלישי','רביעי','חמישי','שישי','שבת'];
+const ARCH='ארכיון', PUB='פורסם', READY='מוכן לפרסום';
+const SNAP=[
+ {d:'2026-06-01',name:'״אצל עוד מישהו יש סאונד כאילו התקרה הולכת לקרוס?״: עשרות עדויות חושפות את שיטת פירר',w:'אילי פארי',t:'תחקיר',s:'פורסם',url:'https://app.notion.com/p/3742cf12731e81bfb5cefc246c0927f4'},
+ {d:'2026-06-02',name:'יאיר לפיד לנדב פרי: ״אתה יודע שאני ציוני ופטריוט ולא שמאלני״',w:'',t:'טור',s:'פורסם',url:'https://app.notion.com/p/3742cf12731e811bb3c1dbd5415015d7'},
+ {d:'2026-06-03',name:'בתמרון בלבנון נכנסנו ל״בית חב״ד אל-חיאם״. שבוע לאחר מכן מצאתי את בעלת הבית',w:'יותם יעקבסון',t:'טור',s:'פורסם',url:'https://app.notion.com/p/3742cf12731e8154ababd42b6eb19d23'},
+ {d:'2026-06-04',name:'מי שבחר להצביע לעו״ד מיכאל ראביליו, שלא יטיף לאיראנים לעשות מהפכה',w:'',t:'טור',s:'פורסם',url:'https://app.notion.com/p/3762cf12731e8132a25ce6b1f26a4012'},
+ {d:'2026-06-04',name:'בג״ץ פסק פה אחד: על המדינה לאפשר את ביקורי הצלב האדום אצל אסירים ביטחוניים',w:'דור זומר',t:'כתבה קצרה',s:'פורסם',url:'https://app.notion.com/p/3752cf12731e81368561c669da852763'},
+ {d:'2026-06-04',name:'המדינה מנסה להפריך את הנזק הנפשי של נפגעות כת שבית המשפט קבע כי הוחזקו בתנאי עבדות',w:'דור זומר',t:'תחקיר',s:'פורסם',url:'https://app.notion.com/p/3742cf12731e80c9a632cb34ff3898c1'},
+ {d:'2026-06-05',name:'מלכודת הכוונות הטובות: כך השמאל הישראלי ממשיך להנשים את הכיבוש',w:'',t:'טור',s:'פורסם',url:'https://app.notion.com/p/3752cf12731e8119be28eb4454f3c070'}
+];
+function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+function pid(url){ const m=String(url).match(/([0-9a-f]{32})/i); return m?m[1]:''; }
+let toastT; function toast(msg){ const el=document.getElementById('toast'); el.textContent=msg; el.classList.add('show');
+  clearTimeout(toastT); toastT=setTimeout(()=>el.classList.remove('show'),2200); }
+function ymd(x){return x.getFullYear()+'-'+String(x.getMonth()+1).padStart(2,'0')+'-'+String(x.getDate()).padStart(2,'0');}
+function dm(x){return String(x.getDate()).padStart(2,'0')+'/'+String(x.getMonth()+1).padStart(2,'0');}
+function pill(s){return s===PUB?'<span class="pill pub">פורסם</span>':s==='רעיון'?'<span class="pill idea">רעיון</span>':s===READY?'<span class="pill ready">מוכן לפרסום</span>':'<span class="pill wip">'+esc(s||'בעבודה')+'</span>';}
+function cat(s){return s===PUB?'pub':(s==='רעיון'?'idea':'wip');}
+const STATUSES=['רעיון','איסוף','תחקיר','כתיבה','עריכה','מוכן לפרסום','פורסם','ארכיון'];
+const WRITERS=['סיון תהל','דור זומר','רויטל חובל','אילי פארי','שקד אורבך','יהודה רחנייב'];
+function statusSel(s){return '<select class="selStatus">'+STATUSES.map(o=>'<option'+(o===s?' selected':'')+'>'+o+'</option>').join('')+(STATUSES.includes(s)?'':'<option selected>'+esc(s)+'</option>')+'</select>';}
+function writerSel(w){return '<select class="selWriter"><option value=""'+(!w?' selected':'')+'>— כתב —</option>'+WRITERS.map(o=>'<option'+(o===w?' selected':'')+'>'+o+'</option>').join('')+'</select>';}
+function parseRes(res){
+  try{
+    if(!res) return null;
+    if(typeof res==='object' && (Array.isArray(res.results)||Array.isArray(res.pages))) return res;
+    if(typeof res==='string') return JSON.parse(res);
+    if(res.content && Array.isArray(res.content)){ const t=res.content.map(c=>c&&c.text?c.text:'').join(''); if(t) return JSON.parse(t); }
+    if(res.result) return parseRes(res.result);
+    if(res.data) return parseRes(res.data);
+  }catch(e){}
+  return null;
+}
+async function queryAll(){
+  let rows=[], cursor=null, g=0;
+  do{
+    const args={view_url:VIEW, page_size:100}; if(cursor) args.start_cursor=cursor;
+    const res=await window.cowork.callMcpTool(TOOL,args);
+    const data=parseRes(res);
+    if(!data||!Array.isArray(data.results)) throw new Error('parse');
+    rows=rows.concat(data.results);
+    cursor=data.has_more?data.next_cursor:null; g++;
+  }while(cursor && g<8);
+  return rows.map(r=>({d:r['date:תאריך פרסום:start']||'', name:r.Name||'(ללא שם)', w:r['כתב/ת']||'', t:r['סוג']||'', s:r.Status||'', url:r.url||'#'}));
+}
+const now=new Date(); const baseSun=new Date(now.getFullYear(),now.getMonth(),now.getDate()-now.getDay());
+const todayY=ymd(new Date());
+let weekOffset=0;
+function weekDays(){ const s=new Date(baseSun); s.setDate(baseSun.getDate()+weekOffset*7);
+  return [...Array(7)].map((_,i)=>{const x=new Date(s); x.setDate(s.getDate()+i); return x;}); }
+const fPub=document.getElementById('fPub'), fWip=document.getElementById('fWip'), fIdea=document.getElementById('fIdea');
+let DATA=SNAP;
+const ORD={pub:0,wip:1,idea:2};
+function draw(){
+  const days=weekDays();
+  const showPub=fPub.checked, showWip=fWip.checked, showIdea=fIdea.checked; let cPub=0,cWip=0,cIdea=0;
+  const grid=document.getElementById('grid'); grid.innerHTML='';
+  days.forEach((dt,i)=>{
+    const k=ymd(dt);
+    const list=DATA.filter(r=>r.d===k && r.s!==ARCH).sort((a,b)=>ORD[cat(a.s)]-ORD[cat(b.s)]);
+    const col=document.createElement('div'); col.className='col'+(k===todayY?' today':''); col.dataset.date=k;
+    col.innerHTML='<div class="colh'+(k===todayY?' today':'')+'">'+DOW[i]+'<b>'+dm(dt)+'</b></div>';
+    let any=false;
+    list.forEach(r=>{const c2=cat(r.s);
+      if(c2==='pub')cPub++; else if(c2==='idea')cIdea++; else cWip++;
+      if(c2==='pub'&&!showPub)return; if(c2==='wip'&&!showWip)return; if(c2==='idea'&&!showIdea)return; any=true;
+      const id=pid(r.url);
+      const metaHtml=id?(statusSel(r.s)+writerSel(r.w)):pill(r.s);
+      col.insertAdjacentHTML('beforeend','<div class="card '+c2+'"'+(id?' draggable="true" data-id="'+id+'"':'')+'><a href="'+r.url+'" target="_blank" rel="noopener">'+esc(r.name)+'</a><div class="meta">'+metaHtml+(r.t?'<span class="typ">'+esc(r.t)+'</span>':'')+'</div></div>');
+    });
+    if(!any) col.insertAdjacentHTML('beforeend','<div class="empty">—</div>');
+    grid.appendChild(col);
+  });
+  document.getElementById('cPub').textContent=cPub; document.getElementById('cWip').textContent=cWip;
+  document.getElementById('cIdea').textContent=cIdea;
+  const label=weekOffset===0?'השבוע':weekOffset===-1?'שבוע שעבר':weekOffset===1?'שבוע הבא':(weekOffset<0?Math.abs(weekOffset)+' שבועות אחורה':weekOffset+' שבועות קדימה');
+  document.getElementById('range').textContent=label+' · '+dm(days[0])+'–'+dm(days[6]);
+  document.getElementById('sub').textContent=cPub+' פורסמו · '+cWip+' בעבודה · '+cIdea+' רעיונות';
+}
+fPub.addEventListener('change',draw); fWip.addEventListener('change',draw); fIdea.addEventListener('change',draw);
+document.getElementById('prev').onclick=()=>{weekOffset--;draw();};
+document.getElementById('next').onclick=()=>{weekOffset++;draw();};
+document.getElementById('cur').onclick=()=>{weekOffset=0;draw();};
+
+async function moveItem(id,newDate){
+  const it=DATA.find(r=>pid(r.url)===id); if(!it) return;
+  const old=it.d; if(old===newDate) return;
+  it.d=newDate; draw(); toast('מעדכן תאריך בנושן…');
+  try{
+    const res=await window.cowork.callMcpTool(UPDATE,{page_id:id, command:'update_properties',
+      properties:{'date:תאריך פרסום:start':newDate,'date:תאריך פרסום:is_datetime':0}});
+    if(res && res.isError) throw new Error('mcp');
+    toast('עודכן ✓ → '+newDate.split('-').reverse().slice(0,2).join('/'));
+  }catch(e){ it.d=old; draw(); toast('שגיאה — התאריך לא עודכן בנושן'); }
+}
+const gridEl=document.getElementById('grid');
+gridEl.addEventListener('dragstart',e=>{ if(e.target.closest('select')){ e.preventDefault(); return; } const c=e.target.closest('.card'); if(c&&c.dataset.id){ e.dataTransfer.setData('text/plain',c.dataset.id); e.dataTransfer.effectAllowed='move'; c.classList.add('dragging'); }});
+gridEl.addEventListener('change',async e=>{
+  const sel=e.target; const card=sel.closest('.card'); if(!card) return; const id=card.dataset.id;
+  const it=DATA.find(r=>pid(r.url)===id); if(!it) return;
+  if(sel.classList.contains('selStatus')){
+    const old=it.s, nv=sel.value; if(nv===old) return; it.s=nv; toast('מעדכן סטטוס…');
+    try{ const res=await window.cowork.callMcpTool(UPDATE,{page_id:id,command:'update_properties',properties:{'Status':nv}}); if(res&&res.isError) throw 0; toast('סטטוס עודכן ✓'); draw(); }
+    catch(_){ it.s=old; sel.value=old; toast('שגיאה — הסטטוס לא עודכן'); }
+  } else if(sel.classList.contains('selWriter')){
+    const old=it.w, nv=sel.value; if(nv===old) return; it.w=nv; toast('מעדכן כתב…');
+    try{ const res=await window.cowork.callMcpTool(UPDATE,{page_id:id,command:'update_properties',properties:{'כתב/ת':nv||null}}); if(res&&res.isError) throw 0; toast('כתב עודכן ✓'); }
+    catch(_){ it.w=old; sel.value=old; toast('שגיאה — הכתב לא עודכן'); }
+  }
+});
+gridEl.addEventListener('dragend',e=>{ const c=e.target.closest('.card'); if(c) c.classList.remove('dragging'); });
+gridEl.addEventListener('dragover',e=>{ const col=e.target.closest('.col'); if(col){ e.preventDefault(); e.dataTransfer.dropEffect='move'; col.classList.add('dropok'); }});
+gridEl.addEventListener('dragleave',e=>{ const col=e.target.closest('.col'); if(col && !col.contains(e.relatedTarget)) col.classList.remove('dropok'); });
+gridEl.addEventListener('drop',async e=>{ const col=e.target.closest('.col'); if(!col)return; e.preventDefault(); col.classList.remove('dropok'); const id=e.dataTransfer.getData('text/plain'); if(id&&col.dataset.date) await moveItem(id,col.dataset.date); });
+
+const TYPES=['תחקיר','כתבה קצרה','טור','ניוזלטר','מגזין'];
+const modal=document.getElementById('modal');
+const mName=document.getElementById('mName'), mDesc=document.getElementById('mDesc'),
+      mWriter=document.getElementById('mWriter'), mType=document.getElementById('mType'),
+      mDate=document.getElementById('mDate'), mSave=document.getElementById('mSave');
+mWriter.insertAdjacentHTML('beforeend',WRITERS.map(w=>'<option>'+w+'</option>').join(''));
+mType.insertAdjacentHTML('beforeend',TYPES.map(t=>'<option>'+t+'</option>').join(''));
+document.getElementById('addBtn').onclick=()=>{ mName.value=''; mDesc.value=''; mWriter.value=''; mType.value=''; mDate.value=''; modal.hidden=false; setTimeout(()=>mName.focus(),50); };
+document.getElementById('mCancel').onclick=()=>{ modal.hidden=true; };
+modal.addEventListener('click',e=>{ if(e.target===modal) modal.hidden=true; });
+mName.addEventListener('keydown',e=>{ if(e.key==='Enter') mSave.click(); });
+mSave.onclick=async()=>{
+  const name=mName.value.trim(); if(!name){ mName.focus(); return; }
+  const props={'Name':name,'Status':'רעיון','פלטפורמה/מדיה':'המקום הכי חם','עורך/ת':DOR};
+  if(mDesc.value.trim()) props['תקציר']=mDesc.value.trim()+' [נפתח מהליינאפ]';
+  else props['תקציר']='[נפתח מהליינאפ]';
+  if(mWriter.value) props['כתב/ת']=mWriter.value;
+  if(mType.value) props['סוג']=mType.value;
+  if(mDate.value){ props['date:תאריך פרסום:start']=mDate.value; props['date:תאריך פרסום:is_datetime']=0; }
+  mSave.disabled=true; toast('פותח תחקיר בנושן…');
+  try{
+    const res=await window.cowork.callMcpTool(CREATE,{parent:{type:'data_source_id',data_source_id:DS},pages:[{properties:props}]});
+    const data=parseRes(res);
+    const url=(data&&data.pages&&data.pages[0]&&data.pages[0].url)||'';
+    if(!url) throw new Error('create');
+    DATA.push({d:mDate.value||'', name:name, w:mWriter.value||'', t:mType.value||'', s:'רעיון', url:url});
+    modal.hidden=true; draw();
+    toast(mDate.value?'נפתח בנושן ✓':'נפתח בנושן ✓ (ללא תאריך — בתצוגת הלידים)');
+  }catch(e){ toast('שגיאה — לא נוצר בנושן'); }
+  mSave.disabled=false;
+};
+
+draw();
+(async()=>{
+  try{
+    const live=await queryAll();
+    if(live&&live.length){ DATA=live; draw();
+      document.getElementById('foot').textContent='נתונים חיים מדאטהבייס Investigations · לחיצה על Reload בראש החלון מרעננת.';
+    }
+  }catch(e){
+    document.getElementById('foot').textContent='לא הצלחתי לשלוף חי מנושן כרגע — מוצג צילום מצב של השבוע. נסה Reload.';
+  }
+})();
+</script>
+</body>
+</html>

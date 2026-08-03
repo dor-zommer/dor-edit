@@ -1,0 +1,28 @@
+{
+  "name": "dor-private-plugins",
+  "owner": {
+    "name": "Dor Zommer / Ha-Makom",
+    "email": "zommerd@gmail.com"
+  },
+  "metadata": {
+    "description": "פלאגינים פרטיים של דור — לא להפצה לצוות",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "dor-edit",
+      "source": "./plugins/dor-edit",
+      "description": "עורך רוח — עריכה עיתונאית מלאה בסגנון של דור: הצעות Docs מיוחסות, אימות עובדות, כותרות, SEO ותמונות."
+    },
+    {
+      "name": "hamakom-desk",
+      "source": "./plugins/hamakom-desk",
+      "description": "ניהול מערכת — סנכרון נושן, ליינאפ, ניוזלטר, אסטרטגיה"
+    },
+    {
+      "name": "hamakom-distribute",
+      "source": "./plugins/hamakom-distribute",
+      "description": "הפצה בלחיצה — כתבה פורסמה ← תיקיית הפצה מלאה בדסקטופ: גרפיקות מעוצבות, קרוסלה, בריף ריל וקופי לכל פלטפורמה לפי ה-DNA של @ha_makom."
+    }
+  ]
+}
