@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>[ כותרת העמוד — להשלמה ]</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Suez+One&family=IBM+Plex+Sans+Hebrew:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<!-- בעת אריזה כתוסף: החלף ל-vendor/leaflet/leaflet.css מקומי -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+:root{
+  --terra:#D97757; --terra-deep:#D97757; --sage:#788C5D; --sage-cta:#5E7344;
+  --heather:#8E6FA8; --heather-deep:#5E4476; --ink:#141413; --ivory:#faf9f5;
+  --paper:#f3f1ea; --line:#E3E0D5; --maxw:1200px;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0; background:var(--ivory); color:var(--ink);
+  font-family:"IBM Plex Sans Hebrew",system-ui,sans-serif; line-height:1.65; -webkit-font-smoothing:antialiased}
+.wrap{max-width:var(--maxw); margin-inline:auto; padding-inline:clamp(18px,5vw,40px)}
+.narrow{max-width:660px}
+h1,h2,h3{font-family:"Suez One",serif; font-weight:400; letter-spacing:-.01em}
+em{font-style:normal; color:var(--terra)}
+
+/* ---------- HERO ---------- */
+.hero{min-height:100vh; display:flex; flex-direction:column; justify-content:center; position:relative; overflow:hidden; background:var(--ink); color:var(--ivory)}
+#heroCanvas{position:absolute; inset:0; width:100%; height:100%; opacity:.55}
+.hero .wrap{position:relative; z-index:2}
+.hero__eyebrow{font-size:.82rem; letter-spacing:.18em; font-weight:600; color:var(--terra); text-transform:uppercase; margin:0 0 22px; opacity:0; animation:fadeUp .8s .2s forwards}
+.hero h1{font-size:clamp(2.6rem,8vw,6rem); line-height:1; margin:0 0 26px; max-width:15ch; opacity:0; animation:fadeUp .9s .35s forwards}
+.hero h1 em{color:var(--terra)}
+.hero__lead{font-size:clamp(1.05rem,2.2vw,1.45rem); max-width:48ch; color:#d7d4cc; margin:0; opacity:0; animation:fadeUp .9s .55s forwards}
+.scrollcue{position:absolute; bottom:30px; right:50%; transform:translateX(50%); z-index:2; font-size:.78rem; color:#a8a59c; letter-spacing:.1em; text-align:center; opacity:0; animation:fadeUp 1s 1s forwards}
+.scrollcue::after{content:"↓"; display:block; font-size:1.3rem; margin-top:8px; animation:bob 1.8s ease-in-out infinite}
+@keyframes bob{0%,100%{transform:translateY(0)}50%{transform:translateY(7px)}}
+@keyframes fadeUp{from{opacity:0;transform:translateY(22px)}to{opacity:1;transform:translateY(0)}}
+
+/* ---------- generic section ---------- */
+.sec{padding-block:clamp(64px,11vh,130px)}
+.kicker{font-size:.82rem; letter-spacing:.12em; font-weight:600; color:var(--sage-cta); text-transform:uppercase; margin:0 0 16px}
+.sec h2{font-size:clamp(1.9rem,4.6vw,3.3rem); line-height:1.08; margin:0 0 20px; max-width:20ch}
+.lead{font-size:clamp(1.05rem,2.1vw,1.28rem); color:#3a3a37; max-width:54ch}
+.reveal{opacity:0; transform:translateY(26px); transition:opacity .7s, transform .7s}
+.reveal.in{opacity:1; transform:none}
+
+/* ---------- placeholder for editorial copy ---------- */
+.ph{border:2px dashed var(--terra); border-radius:14px; background:rgba(217,119,87,.06);
+  padding:22px 26px; margin:30px 0; color:var(--terra-deep); max-width:60ch}
+.ph b{display:block; font-weight:700; font-size:.78rem; letter-spacing:.1em; text-transform:uppercase; margin-bottom:6px}
+.ph span{color:#6b6b66; font-size:.95rem}
+
+/* ---------- SCROLLYTELLING engine ---------- */
+.scrolly{position:relative}
+.scrolly__inner{display:grid; grid-template-columns:0.92fr 1.08fr; gap:clamp(24px,5vw,70px); align-items:start}
+.scrolly__graphic{position:sticky; top:0; height:100vh; display:flex; flex-direction:column; align-items:center; justify-content:center}
+.gtitle{font-size:.82rem; letter-spacing:.1em; color:#6b6b66; margin-bottom:18px; text-transform:uppercase}
+.scrolly__steps{padding-bottom:72vh}
+.step{min-height:165vh; display:block}
+.step:first-child{min-height:95vh}
+.step:last-child{min-height:185vh}
+.step__card{position:sticky; top:32vh; background:rgba(250,249,245,.94); backdrop-filter:blur(3px); border:1px solid var(--line);
+  border-radius:14px; padding:24px 28px; box-shadow:0 8px 30px rgba(20,20,19,.05);
+  opacity:.32; transform:translateY(10px); transition:opacity .45s, transform .45s}
+.step.is-active .step__card{opacity:1; transform:none; border-color:var(--terra)}
+.step__n{font-family:"Suez One",serif; color:var(--terra); font-size:1rem; margin-bottom:8px; display:block}
+.step__card h3{font-size:1.4rem; margin:0 0 10px; line-height:1.2}
+.step__card p{margin:0; font-size:1.02rem; line-height:1.7; color:#33332f}
+.step__card strong{font-weight:600}
+
+/* ---------- sources / outro ---------- */
+.sources{background:var(--ink); color:#d7d4cc; padding-block:clamp(60px,10vh,110px)}
+.sources h2{color:var(--ivory)}
+.sources a{color:var(--terra)}
+.sources ul{list-style:none; padding:0; max-width:680px; columns:2; column-gap:40px}
+.sources li{margin-bottom:12px; font-size:.92rem; break-inside:avoid}
+.method{font-size:.95rem; line-height:1.7; color:#33332f; background:var(--paper); border-radius:12px; padding:22px 26px; max-width:64ch; margin-top:30px}
+.method b{color:var(--ink)}
+.src-line{font-size:.8rem; color:#8a8a84; margin-top:14px}
+
+@media(max-width:780px){
+  .scrolly__inner{display:flex; flex-direction:column}
+  .scrolly__graphic{order:-1; position:sticky; top:0; height:48vh; width:100%; background:linear-gradient(var(--ivory),var(--ivory) 88%,transparent); padding-top:10px; z-index:5}
+  .scrolly__steps{margin-top:6px; padding-bottom:35vh}
+  .step{min-height:155vh}
+  .step:first-child{min-height:130vh}
+  .step:last-child{min-height:185vh}
+  .step__card{position:sticky; top:52vh}
+  .vs{grid-template-columns:1fr; gap:14px} .vs__mid{display:none}
+  .sources ul{columns:1}
+}
+@media(prefers-reduced-motion:reduce){
+  *{animation-duration:.001s!important; transition-duration:.001s!important}
+  html{scroll-behavior:auto}
+}
+</style>
+</head>
+<body>
+
+<!-- ========== HERO ========== -->
+<header class="hero">
+  <canvas id="heroCanvas"></canvas>
+  <div class="wrap">
+    <p class="hero__eyebrow">[ אייברו — להשלמה ]</p>
+    <h1>[ כותרת ראשית — להשלמה ]</h1>
+    <p class="hero__lead">[ ליד — להשלמה ]</p>
+  </div>
+  <div class="scrollcue">גללו</div>
+</header>
+
+<!-- ========== DEMO SCROLLY (מוכיח שהמנוע עובד) ========== -->
+<section class="sec scrolly" id="demo">
+  <div class="wrap scrolly__inner">
+    <div class="scrolly__steps" id="demoSteps">
+      <div class="step" data-step="0"><div class="step__card"><span class="step__n">01</span><h3>[ כותרת צעד — להשלמה ]</h3><p>[ טקסט צעד — להשלמה ]</p></div></div>
+      <div class="step" data-step="1"><div class="step__card"><span class="step__n">02</span><h3>[ כותרת צעד — להשלמה ]</h3><p>[ טקסט צעד — להשלמה ]</p></div></div>
+      <div class="step" data-step="2"><div class="step__card"><span class="step__n">03</span><h3>[ כותרת צעד — להשלמה ]</h3><p>[ טקסט צעד — להשלמה ]</p></div></div>
+    </div>
+    <div class="scrolly__graphic">
+      <div class="gtitle">[ כותרת גרפיקה — להשלמה ]</div>
+      <div id="demoViz" style="font-family:'Suez One',serif;font-size:clamp(4rem,12vw,8rem);color:var(--terra);transition:color .4s">—</div>
+    </div>
+  </div>
+</section>
+
+<!-- ========== מקום לקומפוננטות נוספות ========== -->
+<section class="sec">
+  <div class="wrap narrow">
+    <div class="ph"><b>להשלמה</b><span>הוסיפו כאן מקטעי scrolly נוספים, ציר זמן, רשת מושגים, ושו״ת — ראו components.md</span></div>
+  </div>
+</section>
+
+<!-- ========== SOURCES / OUTRO ========== -->
+<section class="sources">
+  <div class="wrap narrow">
+    <h2>[ מקורות ומתודולוגיה — להשלמה ]</h2>
+    <ul>
+      <li>[ מקור — להשלמה ]</li>
+    </ul>
+  </div>
+</section>
+
+<!-- בעת אריזה כתוסף: החלף ל-vendor/leaflet/leaflet.js מקומי -->
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+var REDUCE = window.matchMedia && window.matchMedia('(prefers-reduced-motion:reduce)').matches;
+
+/* ---- generic reveal-on-scroll ---- */
+(function(){
+  var io=new IntersectionObserver(function(es){es.forEach(function(e){if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target);}});},{threshold:.18});
+  document.querySelectorAll('.reveal').forEach(function(el){io.observe(el);});
+})();
+
+/* ---- count-up helper ---- */
+function countTo(el, target, dur, fmt){
+  if(REDUCE){el.textContent=fmt?fmt(target):target;return;}
+  var t0=null; dur=dur||900;
+  function tick(t){if(!t0)t0=t;var k=Math.min(1,(t-t0)/dur),e=1-Math.pow(1-k,3),v=target*e;
+    el.textContent=fmt?fmt(v):Math.round(v); if(k<1)requestAnimationFrame(tick); else el.textContent=fmt?fmt(target):target;}
+  requestAnimationFrame(tick);
+}
+
+/* ---- scrollytelling engine ---- */
+function scrolly(stepsSel, onStep){
+  var steps=document.querySelectorAll(stepsSel+' .step');
+  var cur=-1;
+  var io=new IntersectionObserver(function(es){
+    es.forEach(function(e){
+      if(e.isIntersecting){
+        var i=+e.target.dataset.step;
+        steps.forEach(function(s){s.classList.toggle('is-active', s===e.target);});
+        if(i!==cur){cur=i; onStep(i);}
+      }
+    });
+  },{rootMargin:'-33% 0px -58% 0px', threshold:0});
+  steps.forEach(function(s){io.observe(s);});
+}
+
+/* ---- HERO ambient canvas (drifting plan-dots) ---- */
+(function(){
+  var cv=document.getElementById('heroCanvas'); if(!cv||REDUCE)return;
+  var ctx=cv.getContext('2d'), W,H,pts=[];
+  function size(){W=cv.width=cv.offsetWidth; H=cv.height=cv.offsetHeight;
+    pts=[]; var n=Math.floor(W*H/9000);
+    for(var i=0;i<n;i++)pts.push({x:Math.random()*W,y:Math.random()*H,r:Math.random()*2+1,
+      vx:(Math.random()-.5)*.25,vy:(Math.random()-.5)*.25,c:Math.random()<.78?'#D97757':'#8E6FA8'});}
+  size(); window.addEventListener('resize',size);
+  var raf=null, vis=true;
+  function loop(){ if(!vis){raf=null;return;}
+    ctx.clearRect(0,0,W,H);
+    pts.forEach(function(p){p.x+=p.vx;p.y+=p.vy;
+      if(p.x<0||p.x>W)p.vx*=-1; if(p.y<0||p.y>H)p.vy*=-1;
+      ctx.globalAlpha=.5; ctx.fillStyle=p.c; ctx.beginPath(); ctx.arc(p.x,p.y,p.r,0,7); ctx.fill();});
+    raf=requestAnimationFrame(loop);
+  }
+  if(window.IntersectionObserver){ new IntersectionObserver(function(es){ vis=es[0].isIntersecting; if(vis&&!raf)loop(); }).observe(cv); }
+  loop();
+})();
+
+<!-- דמו: החליפו ב-builders של הקומפוננטות מ-components.md -->
+(function(){ var viz=document.getElementById('demoViz'); var labels=['—','1','2'];
+  scrolly('#demoSteps', function(i){ viz.textContent=labels[i]||'—'; }); })();
+</script>
+</body>
+</html>

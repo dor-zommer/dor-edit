@@ -1,0 +1,11 @@
+{
+  "name": "searchfit-seo",
+  "version": "1.0.0",
+  "description": "AI-powered SEO toolkit customized for ha-makom.co.il — Hebrew (RTL) news SEO for an Israeli investigative-journalism site on WordPress + Yoast. Audit, plan content, optimize articles, generate NewsArticle schema, cluster Hebrew keywords, and track AI visibility. Based on the free SearchFit.ai toolkit.",
+  "author": {
+    "name": "SearchFit.ai",
+    "url": "https://searchfit.ai"
+  },
+  "homepage": "https://searchfit.ai",
+  "repository": "https://github.com/searchfit/searchfit-seo"
+}

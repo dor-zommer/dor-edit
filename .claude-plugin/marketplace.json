@@ -6,7 +6,7 @@
   },
   "metadata": {
     "description": "פלאגינים פרטיים של דור — לא להפצה לצוות",
-    "version": "1.0.0"
+    "version": "1.1.0"
   },
   "plugins": [
     {
@@ -23,6 +23,16 @@
       "name": "hamakom-distribute",
       "source": "./plugins/hamakom-distribute",
       "description": "הפצה בלחיצה — כתבה פורסמה ← תיקיית הפצה מלאה בדסקטופ: גרפיקות מעוצבות, קרוסלה, בריף ריל וקופי לכל פלטפורמה לפי ה-DNA של @ha_makom."
+    },
+    {
+      "name": "hamakom-data-page",
+      "source": "./plugins/hamakom-data-page",
+      "description": "עמוד דאטה-ז'ורנליזם סקרולי-טלינג + אריזה כתוסף WordPress מבודד. סיקור-מקדים מ-WP REST API, טמפלייט, ספריית קומפוננטות, וכללי מותג/קול."
+    },
+    {
+      "name": "searchfit-seo",
+      "source": "./plugins/searchfit-seo",
+      "description": "ערכת SEO לחדשות בעברית, מותאמת ל-ha-makom.co.il"
     }
   ]
 }

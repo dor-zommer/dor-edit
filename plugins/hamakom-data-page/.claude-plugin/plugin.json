@@ -1,0 +1,7 @@
+{
+  "name": "hamakom-data-page",
+  "version": "1.0.0",
+  "description": "בניית עמוד דאטה-ז'ורנליזם סקרולי-טלינג ל'המקום הכי חם בגיהנום' (RTL עברית, vanilla JS) ואריזתו כתוסף WordPress מבודד ב-iframe. מתחיל בשלב סיקור-מקדים חובה: שליפת כל הכתבות בנושא מ-WP REST API וחילוץ נתונים/ציטוטים/אירועים — ורק אז בנייה. כולל טמפלייט שלד, ספריית קומפוננטות, סקאפולד תוסף, וכללי מותג/רספונסיב/קול-עיתונאי.",
+  "author": { "name": "Dor Zommer / Ha-Makom", "email": "zommerd@gmail.com" },
+  "skills": [ "./skills/hamakom-data-page" ]
+}
