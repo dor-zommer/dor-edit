@@ -86,7 +86,13 @@ python3 "$DE/scripts/build_docx.py" draft.txt baseline.docx
 - החלפה: `{"type": "replacement", "originalText": "<טקסט קיים ייחודי>", "newText": "<החלופה>"}` — אפשר `"occurrence": N` אם המחרוזת חוזרת.
 - הוספה: `{"type": "insertion", "anchor": "<טקסט קיים לעיגון>", "newText": "<מה שמוסיפים>"}` — נכתב **אחרי** העוגן, בלי לגעת בו. בלי `anchor` — נכתב בראש המסמך.
 - מחיקה בלבד: `replacement` עם `"newText": ""`.
-- הערה: `{"type": "comment", "anchor": "<טקסט קיים>", "comment": "<ההערה>"}` — נוספת כהערת Docs דרך Drive API. אם נכשלה — מדולגת ומתועדת ב-`comments_skipped`, ואז מעבירים אותה לדוח העורך.
+- הערת עורך: `{"type": "comment", "anchor": "<טקסט קיים>", "comment": "<ההערה>"}` — נכתבת **בגוף** כהצעת-הוספה בצורה `[הערת עורך: ...]`, צמוד לעוגן. הפלט מדווח `editor_notes`.
+
+> **למה לא הערת Docs בשוליים (נקבע 02.08.2026 אחרי שדור דיווח "אני רואה רק הצעות"):** Drive API **אינו יכול** לייצר הערה מעוגנת בקובץ Google Docs. התיעוד של גוגל מפורש: "Anchored comments on blob files or Google Docs editor files aren't supported... Google Workspace editor apps treat these comments as un-anchored comments" ([מקור](https://developers.google.com/workspace/drive/api/guides/manage-comments); באג פתוח מאז 2016: [issuetracker 36763384](https://issuetracker.google.com/issues/36763384)). ההערה נוצרת, ה-API מחזיר `id`, ודור לא רואה כלום. אומת אמפירית מול ייצוא docx — `w:commentRangeStart` יצא 0 בכל הווריאציות שנוסו (מספר רוויזיה, `head`, בלי `ml`, היסט 1-מבוסס, `kix.*`, היסטי `text/plain`), כולל על מסמך ניסוי נקי.
+>
+> **שיטת האימות, אם השאלה תחזור:** לייצא ל-docx דרך `files/{id}/export` ולספור `<w:commentRangeStart` ב-`word/document.xml`. אפס = לא מעוגן. `comments_added: N` **אינו** הוכחה. ולא להסתמך על "ל-Docs API יש הערות" — מסמך הגילוי החי מכיל משאב אחד (`documents`) ואפס בקשות שקשורות להערות.
+>
+> הערות מעוגנות אמיתיות אפשריות רק מייבוא docx (מסלול ב) או מהממשק בדפדפן. **אסור לבנות מחדש מסמך שדור כבר מכריע בו רק כדי להשיג עוגנים.**
 
 **הרצף (מסלול א):**
 1. הפק את `edits.json` מהחלטות שלב 4. שמור גם `edited.txt` (הטקסט המלא אחרי כל העריכות) כתיעוד.

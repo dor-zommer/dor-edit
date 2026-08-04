@@ -662,6 +662,22 @@ def _norm_edit(rec: dict) -> dict:
     return {"type": t, "find": find, "new": new, "occurrence": occ, "comment": comment}
 
 
+def _editor_note(text: str) -> str:
+    """הערת עורך כטקסט שנכתב **בגוף** כהצעת-הוספה.
+
+    **למה לא הערת Docs אמיתית:** Drive API אינו יכול לייצר הערה מעוגנת בקובץ
+    Google Docs. התיעוד של גוגל מפורש - "Anchored comments on blob files or
+    Google Docs editor files aren't supported... Google Workspace editor apps
+    treat these comments as un-anchored comments". התוצאה: ההערה נוצרת, ה-API
+    מחזיר הצלחה, ודור לא רואה אותה בשוליים. אומת אמפירית 02.08.2026 מול ייצוא
+    docx (`w:commentRangeStart` = 0 בכל הווריאציות שנוסו), ואושר מול התיעוד.
+
+    לכן הערת עורך נכתבת כהצעת-הוספה בגוף: מעוגנת בהגדרה, נראית במקום הנכון,
+    מיוחסת לדור, ודחייה בלחיצה אחת מוחקת אותה.
+    """
+    return f" [הערת עורך: {text.strip()}]"
+
+
 def _find_occurrences(plain: str, needle: str) -> list:
     out, i = [], plain.find(needle)
     while i != -1:
@@ -699,12 +715,13 @@ def propose_edits(doc_id: str, account: str, edits_path: Path, tab_id: str | Non
     if isinstance(raw, dict):
         raw = raw.get("edits") or raw.get("changes") or []
 
-    resolved, comments, skipped = [], [], []
+    resolved, notes, skipped = [], 0, []
     for rec in raw:
         e = _norm_edit(rec)
         if e["type"] == "comment":
-            comments.append(e)
-            continue
+            # הערת עורך = הצעת-הוספה בגוף, לא הערת Drive (ראה _editor_note)
+            e = {**e, "type": "insertion", "new": _editor_note(e["comment"])}
+            notes += 1
         find, new, occ = e["find"], e["new"], e["occurrence"]
         if e["type"] == "insertion" and not find:
             resolved.append({"start": 1, "end": 1, "new": new})  # הוספה טהורה → ראש המסמך
@@ -756,16 +773,8 @@ def propose_edits(doc_id: str, account: str, edits_path: Path, tab_id: str | Non
     if reqs:
         batch(doc_id, token, reqs)
 
-    comments_added, comments_skipped = 0, []
-    for c in comments:
-        try:
-            _create_comment(doc_id, token, c["comment"], c["find"] or None)
-            comments_added += 1
-        except Exception as ex:  # scope לא מספיק / anchor לא נמצא → דלג ותעד
-            comments_skipped.append({"text": (c["find"] or c["comment"])[:40], "error": str(ex)[:120]})
-
     return {"id": doc_id, "tab_id": tid, "applied": len(resolved), "requests": len(reqs),
-            "comments_added": comments_added, "comments_skipped": comments_skipped,
+            "editor_notes": notes,
             "skipped": skipped,
             "url": f"https://docs.google.com/document/d/{doc_id}/edit?tab={tid}"}
 
@@ -812,12 +821,13 @@ def suggest_edits(doc_id: str, account: str, edits_path: Path, tab_id: str | Non
     if isinstance(raw, dict):
         raw = raw.get("edits") or raw.get("changes") or []
 
-    resolved, comments, skipped = [], [], []
+    resolved, notes, skipped = [], 0, []
     for rec in raw:
         e = _norm_edit(rec)
         if e["type"] == "comment":
-            comments.append(e)
-            continue
+            # הערת עורך = הצעת-הוספה בגוף, לא הערת Drive (ראה _editor_note)
+            e = {**e, "type": "insertion", "new": _editor_note(e["comment"])}
+            notes += 1
         find, new, occ = e["find"], e["new"], e["occurrence"]
         if e["type"] == "insertion" and not find:
             resolved.append({"start": 1, "end": 1, "new": new})
@@ -863,19 +873,11 @@ def suggest_edits(doc_id: str, account: str, edits_path: Path, tab_id: str | Non
     counts = _count_suggestions(get_doc_view(doc_id, token, "SUGGESTIONS_INLINE"))
     overwrote = bool(reqs) and counts["total"] == 0
 
-    comments_added, comments_skipped = 0, []
-    for c in comments:
-        try:
-            _create_comment(doc_id, token, c["comment"], c["find"] or None)
-            comments_added += 1
-        except Exception as ex:
-            comments_skipped.append({"text": (c["find"] or c["comment"])[:40], "error": str(ex)[:120]})
-
     return {"id": doc_id, "tab_id": tid, "mode": "suggest", "applied": len(resolved),
             "requests": len(reqs), "suggestions": counts,
             "clean": counts["tagged"] == 0 and not overwrote,
             "overwrote": overwrote,
-            "comments_added": comments_added, "comments_skipped": comments_skipped,
+            "editor_notes": notes,
             "skipped": skipped,
             "url": f"https://docs.google.com/document/d/{doc_id}/edit?tab={tid}"}
 
