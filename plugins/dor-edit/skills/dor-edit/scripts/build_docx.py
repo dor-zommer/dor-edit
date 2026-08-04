@@ -3,7 +3,7 @@
 
 כל שורה לא-ריקה הופכת לפסקה RTL. תחביר מרקדאון בסיסי:
 - **מודגש** נשמר כ-run מודגש
-- [טקסט](קישור) הופך ל"טקסט (קישור)" גלוי
+- [טקסט](קישור) הופך להיפר-קישור אמיתי על הטקסט (הכתובת לא מוצגת)
 - # / ## / ### מקבלות סגנון כותרת (Alef, גדול מ-14, מודגש)
 
 מפרט טיפוגרפי (דרישת דור): כל המסמכים בפונט **Alef**, גוף בגודל **14**.
@@ -33,10 +33,31 @@ RELS = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
 </Relationships>"""
 
-DOC_RELS = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+DOC_RELS_HEAD = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
-</Relationships>"""
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>"""
+DOC_RELS_TAIL = "</Relationships>"
+HYPERLINK_TYPE = ("http://schemas.openxmlformats.org/officeDocument/2006/"
+                  "relationships/hyperlink")
+
+# הקישורים נאספים תוך כדי בניית הפסקאות, כי כל אחד צריך rId משלו ב-rels.
+_LINKS: list[str] = []
+
+
+def _link_rid(url: str) -> str:
+    """מחזיר rId לקישור, ומוסיף אותו לרשימה אם הוא חדש."""
+    if url not in _LINKS:
+        _LINKS.append(url)
+    return f"rIdL{_LINKS.index(url) + 1}"
+
+
+def doc_rels_xml() -> str:
+    rels = [DOC_RELS_HEAD]
+    for i, url in enumerate(_LINKS, 1):
+        rels.append(f'<Relationship Id="rIdL{i}" Type="{HYPERLINK_TYPE}" '
+                    f'Target="{escape(url, {chr(34): "&quot;"})}" TargetMode="External"/>')
+    rels.append(DOC_RELS_TAIL)
+    return "".join(rels)
 
 
 def _rfonts() -> str:
@@ -74,23 +95,46 @@ def styles_xml() -> str:
     )
 
 
-def runs_from_line(line: str, half_pt: int = BODY_HALF_PT) -> str:
-    line = re.sub(r"\[([^\]]+)\]\((https?://[^)]+)\)", r"\1 (\2)", line)
+def _plain_runs(text: str, half_pt: int, link: bool = False) -> str:
+    """בונה runs מטקסט, עם טיפול ב-**מודגש**. link=True מוסיף עיצוב קישור."""
     out = []
-    for part in re.split(r"(\*\*[^*]+\*\*)", line):
+    for part in re.split(r"(\*\*[^*]+\*\*)", text):
         if not part:
             continue
         bold = part.startswith("**") and part.endswith("**")
-        text = part[2:-2] if bold else part
+        body = part[2:-2] if bold else part
         # הפונט והגודל חוזרים גם ברמת ה-run: הממיר של Google Docs לא תמיד
         # יורש docDefaults, ובלי cs/szCs העברית נופלת לברירת המחדל.
         rpr = ("<w:rPr>" + _rfonts() + ("<w:b/><w:bCs/>" if bold else "")
+               + ('<w:color w:val="1155CC"/><w:u w:val="single"/>' if link else "")
                + _sizes(half_pt) + "<w:rtl/></w:rPr>")
-        out.append(f'<w:r>{rpr}<w:t xml:space="preserve">{escape(text)}</w:t></w:r>')
+        out.append(f'<w:r>{rpr}<w:t xml:space="preserve">{escape(body)}</w:t></w:r>')
+    return "".join(out)
+
+
+def runs_from_line(line: str, half_pt: int = BODY_HALF_PT) -> str:
+    """[טקסט](url) הופך ל-w:hyperlink אמיתי — הכתובת לא מוצגת בגוף הטקסט.
+
+    לפני התיקון (02.08.2026) הקישורים רונדרו כ"טקסט (url)", והמסמך שנמסר
+    לכתב/ת היה זרוע כתובות גולמיות. עכשיו הקישור יושב על הטקסט עצמו,
+    וההמרה ל-Google Docs משמרת אותו כקישור חי.
+    """
+    out, pos = [], 0
+    for m in re.finditer(r"\[([^\]]+)\]\((https?://[^)\s]+)\)", line):
+        if m.start() > pos:
+            out.append(_plain_runs(line[pos:m.start()], half_pt))
+        rid = _link_rid(m.group(2))
+        out.append(f'<w:hyperlink r:id="{rid}">'
+                   + _plain_runs(m.group(1), half_pt, link=True)
+                   + "</w:hyperlink>")
+        pos = m.end()
+    if pos < len(line):
+        out.append(_plain_runs(line[pos:], half_pt))
     return "".join(out)
 
 
 def build(draft_path: str, out_path: str) -> int:
+    _LINKS.clear()
     text = open(draft_path, encoding="utf-8").read()
     paras = []
     for raw in text.split("\n"):
@@ -111,13 +155,14 @@ def build(draft_path: str, out_path: str) -> int:
         paras.append(f"<w:p>{ppr}{runs_from_line(line, half)}</w:p>")
     doc = (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
-        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
         f"<w:body>{''.join(paras)}</w:body></w:document>"
     )
     with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr("[Content_Types].xml", CONTENT_TYPES)
         z.writestr("_rels/.rels", RELS)
-        z.writestr("word/_rels/document.xml.rels", DOC_RELS)
+        z.writestr("word/_rels/document.xml.rels", doc_rels_xml())
         z.writestr("word/styles.xml", styles_xml())
         z.writestr("word/document.xml", doc)
     return len(paras)
