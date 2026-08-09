@@ -13,12 +13,15 @@ Track changes בקובץ הופכים ל"הצעות עריכה" (suggestions) ב
     python3 upload_to_gdocs.py --report-tab report.txt --doc <doc_id>
     # אכיפת פונט Alef 14 על מסמך קיים (אפשר להגביל ללשונית אחת):
     python3 upload_to_gdocs.py --enforce-font --doc <doc_id> [--only-tab <tab_id>]
-    # מסלול מסירה API טהור — visual-diff (הוספה ירוקה+קו-תחתון, מחיקה אדומה+קו-חוצה):
-    python3 upload_to_gdocs.py --propose edits.json --doc <doc_id> [--tab <tab_id>]
-    # ניקוי הסימון אחרי החלטת דור (accept משאיר את החדש בשחור; reject מחזיר את הישן):
-    python3 upload_to_gdocs.py --resolve accept --doc <doc_id> [--tab <tab_id>]
+    # החלת edits.json כהצעות Docs אמיתיות (writeMode SUGGEST):
+    python3 upload_to_gdocs.py --suggest edits.json --doc <doc_id> [--tab <tab_id>]
+    # ולידציה מקומית של עוגנים מול קובץ טיוטה — בלי לגעת ב-Google Docs:
+    python3 upload_to_gdocs.py --validate edits.json --draft draft.txt
 
 פלט (stdout): JSON עם doc_id ו-url.
+
+מיקום ריפו הטוקנים: משתנה הסביבה GMAIL_MULTI_DIR, עם פולבק ל-
+~/Desktop/gmail-multi-account-mcp.
 
 ממצאים מאומתים (17.07.2026) — אל תשנה בלי לבדוק מחדש:
 - `addDocumentTab` **כן** נתמך ב-API. הסכימה: `{"addDocumentTab":{"tabProperties":{"title":"..."}}}`
@@ -35,23 +38,17 @@ Track changes בקובץ הופכים ל"הצעות עריכה" (suggestions) ב
   **Developer Preview** ודורש רישום ל-Google Workspace Developer Preview Program.
 - פרויקט שאינו רשום: הבקשה מחזירה **200 בלי שגיאה — והשינוי נכתב כעריכה ישירה**.
   כלומר בקשה שנראית "הצעה" מבצעת בפועל דריסה שקופה של טקסט קיים.
-- **לעולם אל תסמוך על SUGGEST בלי אימות**: קרא חזרה עם
-  `?suggestionsViewMode=PREVIEW_WITHOUT_SUGGESTIONS`. אם השינוי מופיע שם — הוא דרס.
+- **לעולם אל תסמוך על SUGGEST בלי אימות**: suggest_edits מצלם את מזהי ההצעות
+  לפני הכתיבה ובודק שאחריה נוספו מזהים **חדשים**. applied>0 בלי אף הצעה
+  חדשה = overwrote.
 - `addDocumentTab` ממילא **אינו נתמך** ב-SUGGEST mode (מתועד) — לשונית הדוח נוצרת
   תמיד ב-EDIT, וזה תקין: יצירת לשונית חדשה לא דורסת דבר.
 
-מסלול המסירה --propose / --resolve (visual-diff, נוסף 17.07.2026):
-- שכפול פייתוני של proposeEdits/resolveEdits מ-`~/Developer/google-docs-mcp/src/docs.ts`.
-- **הפשרה המפורשת:** זה טקסט צבוע, לא הצעות (suggestions) אמיתיות של Docs. תוספת =
-  טקסט חדש ירוק (rgb 0.1/0.5/0.1) עם קו-תחתון; מחיקה = הטקסט הישן נצבע אדום
-  (rgb 0.8/0.1/0.1) עם קו-חוצה — **הישן לא נמחק** (חוק הברזל: נראה והפיך עד שדור מכריע).
-- **חוק הברזל נשמר:** אף פעולה כאן לא מוחקת טקסט קיים. --propose רק צובע ומוסיף;
-  --resolve accept/reject מנקה את הסימון לפי החלטת דור (accept מוחק את הישן-האדום;
-  reject מוחק את החדש-הירוק). אין batchUpdate שדורס טקסט של דור.
-- **מיון יורד לפי startIndex** לפני הכתיבה (docs.ts:139) — נקודת הכשל המרכזית: בלי זה
-  ההכנסות מזיזות את האינדקסים של העריכות שאחריהן. כל הבקשות נשלחות ב-batchUpdate אחד.
+הערות עורך (הוכרע 10.08.2026): type=comment **הוסר**. הערות עורך שייכות לדוח
+העורך (report.txt) בלבד — לעולם לא לגוף הכתבה. רשומת comment ב-edits.json
+מדולגת עם אזהרה.
 """
-import json, re, ssl, sys, argparse, uuid, urllib.request, urllib.parse
+import json, os, re, ssl, sys, time, argparse, uuid, urllib.error, urllib.request, urllib.parse
 from datetime import datetime
 from pathlib import Path
 
@@ -62,10 +59,47 @@ except ImportError:
     _CTX = ssl.create_default_context()
 
 
-def _open(req):
-    return urllib.request.urlopen(req, context=_CTX)
+def _open(req, retries: int = 3):
+    """עטיפת urlopen: מדפיס את גוף שגיאת ה-HTTP מגוגל, ו-retry עם backoff על 429/5xx."""
+    last_err = None
+    for attempt in range(retries):
+        try:
+            return urllib.request.urlopen(req, context=_CTX)
+        except urllib.error.HTTPError as e:
+            body = ""
+            try:
+                body = e.read().decode("utf-8", "ignore")
+            except Exception:
+                pass
+            retryable = e.code == 429 or e.code >= 500
+            print(f"HTTP {e.code} מגוגל"
+                  + (f" (ניסיון {attempt + 1}/{retries})" if retryable else "")
+                  + (f": {body[:2000]}" if body else ""), file=sys.stderr)
+            if retryable and attempt < retries - 1:
+                time.sleep(2 ** attempt)
+                last_err = e
+                continue
+            raise
+        except urllib.error.URLError as e:
+            print(f"שגיאת רשת (ניסיון {attempt + 1}/{retries}): {e.reason}", file=sys.stderr)
+            if attempt < retries - 1:
+                time.sleep(2 ** attempt)
+                last_err = e
+                continue
+            raise
+    raise last_err  # pragma: no cover
 
-REPO = Path.home() / "Desktop" / "gmail-multi-account-mcp"
+
+def _repo() -> Path:
+    env = os.environ.get("GMAIL_MULTI_DIR")
+    repo = Path(env).expanduser() if env else Path.home() / "Desktop" / "gmail-multi-account-mcp"
+    if not repo.exists():
+        sys.exit(f"תיקיית gmail-multi-account-mcp לא נמצאה: {repo}\n"
+                 "הגדר את משתנה הסביבה GMAIL_MULTI_DIR לנתיב הריפו, "
+                 "או ודא שהריפו קיים ב-~/Desktop/gmail-multi-account-mcp")
+    return repo
+
+
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 DOCS_API = "https://docs.googleapis.com/v1/documents"
 FONT = "Alef"
@@ -73,16 +107,18 @@ BODY_PT = 14
 # היררכיית הכותרות של הסקיל — מפורשת, כדי שלא יירשו את גדלי ברירת המחדל של Docs
 HEADING_PT = {"HEADING_1": 20, "HEADING_2": 17, "HEADING_3": 15, "TITLE": 22}
 REPORT_TAB_TITLE = "דוח עורך"
+BATCH_CHUNK = 300  # מספר בקשות מקסימלי ב-batchUpdate אחד
 
 
 def token_path(account: str) -> Path:
     slug = account.replace("@", "_at_").replace(".", "_")
-    return REPO / "tokens" / f"{slug}.json"
+    return _repo() / "tokens" / f"{slug}.json"
 
 
 def access_token(account: str) -> str:
+    repo = _repo()
     tok = json.loads(token_path(account).read_text())
-    secret = json.loads((REPO / "client_secret.json").read_text())
+    secret = json.loads((repo / "client_secret.json").read_text())
     conf = secret.get("installed") or secret.get("web")
     data = urllib.parse.urlencode({
         "client_id": conf["client_id"],
@@ -147,10 +183,22 @@ def get_doc(doc_id: str, token: str) -> dict:
     return _docs(f"{DOCS_API}/{doc_id}?includeTabsContent=true", token)
 
 
+def _batch_raw(doc_id: str, token: str, requests: list, write_control: dict | None = None) -> dict:
+    body = {"requests": requests}
+    if write_control:
+        body["writeControl"] = write_control
+    return _docs(f"{DOCS_API}/{doc_id}:batchUpdate", token, "POST", body)
+
+
 def batch(doc_id: str, token: str, requests: list) -> dict:
+    """batchUpdate בצ'אנקים של עד BATCH_CHUNK בקשות — מאמר ארוך לא נופל על באטץ' ענק."""
     if not requests:
         return {}
-    return _docs(f"{DOCS_API}/{doc_id}:batchUpdate", token, "POST", {"requests": requests})
+    replies = []
+    for i in range(0, len(requests), BATCH_CHUNK):
+        rep = _batch_raw(doc_id, token, requests[i:i + BATCH_CHUNK])
+        replies.extend(rep.get("replies", []))
+    return {"replies": replies}
 
 
 def batch_suggest(doc_id: str, token: str, requests: list) -> dict:
@@ -160,11 +208,18 @@ def batch_suggest(doc_id: str, token: str, requests: list) -> dict:
     דורש שהטוקן יהיה מהפרויקט הרשום ב-Google Workspace Developer Preview
     (dor-gmail-mcp / 719854974771 — אושר 17.07.2026). על פרויקט לא-רשום SUGGEST
     נבלע בשקט והופך לדריסה — לכן suggest_edits תמיד מאמת אחרי הכתיבה.
+
+    הבקשות ממוינות יורד לפי אינדקס, ולכן פיצול לצ'אנקים בטוח: כל צ'אנק נוגע
+    באינדקסים נמוכים מקודמו ואינו מוזז על ידיו.
     """
     if not requests:
         return {}
-    return _docs(f"{DOCS_API}/{doc_id}:batchUpdate", token, "POST",
-                 {"requests": requests, "writeControl": {"writeMode": "SUGGEST"}})
+    replies = []
+    for i in range(0, len(requests), BATCH_CHUNK):
+        rep = _batch_raw(doc_id, token, requests[i:i + BATCH_CHUNK],
+                         write_control={"writeMode": "SUGGEST"})
+        replies.extend(rep.get("replies", []))
+    return {"replies": replies}
 
 
 def get_doc_view(doc_id: str, token: str, view: str) -> dict:
@@ -174,28 +229,6 @@ def get_doc_view(doc_id: str, token: str, view: str) -> dict:
 
 def _stamp() -> str:
     return datetime.now().strftime("%d.%m.%Y %H:%M")
-
-
-def _paragraphs(tab: dict):
-    """מחזיר (namedStyleType, startIndex, endIndex) לכל פסקה עם טקסט אמיתי.
-
-    יורד גם לתוך תאי טבלה — בלעדיו טקסט בטבלאות לא מקבל את הפונט.
-    """
-    def walk(content):
-        for el in content:
-            p = el.get("paragraph")
-            if p:
-                runs = [e for e in p.get("elements", []) if e.get("textRun")]
-                if runs and any(e["textRun"]["content"].strip() for e in runs):
-                    style = p.get("paragraphStyle", {}).get("namedStyleType", "NORMAL_TEXT")
-                    yield style, runs[0]["startIndex"], runs[-1]["endIndex"]
-            t = el.get("table")
-            if t:
-                for row in t.get("tableRows", []):
-                    for cell in row.get("tableCells", []):
-                        yield from walk(cell.get("content", []))
-
-    yield from walk(tab["documentTab"]["body"]["content"])
 
 
 def _runs(tab: dict):
@@ -230,6 +263,8 @@ def _runs(tab: dict):
 def font_requests(doc: dict, only_tab: str | None = None) -> list:
     """Alef על כל הטקסט; גודל לפי רמת הכותרת — והדגשה קיימת נשמרת.
 
+    runs סמוכים עם אותו יעד עיצוב (bold + גודל) מאוחדים לבקשה אחת —
+    מקטין דרמטית את מספר הבקשות על מאמר ארוך.
     `only_tab` מגביל את האכיפה ללשונית אחת (ראה הערת חוק-הברזל ב-enforce_font).
     """
     reqs = []
@@ -237,9 +272,18 @@ def font_requests(doc: dict, only_tab: str | None = None) -> list:
         tid = tab["tabProperties"]["tabId"]
         if only_tab and tid != only_tab:
             continue
+        # איחוד runs סמוכים: [pt, start, end, bold]
+        merged = []
         for style, start, end, bold in _runs(tab):
             if end <= start:
                 continue
+            pt = HEADING_PT.get(style, BODY_PT if style == "NORMAL_TEXT" else None)
+            if merged and merged[-1][3] == bold and merged[-1][0] == pt \
+                    and start <= merged[-1][2] + 1:
+                merged[-1][2] = max(merged[-1][2], end)
+            else:
+                merged.append([pt, start, end, bold])
+        for pt, start, end, bold in merged:
             rng = {"tabId": tid, "startIndex": start, "endIndex": end}
             reqs.append({"updateTextStyle": {
                 "range": rng,
@@ -248,7 +292,6 @@ def font_requests(doc: dict, only_tab: str | None = None) -> list:
                     "fontFamily": FONT, "weight": 700 if bold else 400}},
                 "fields": "weightedFontFamily"}})
             # גודל מפורש לכל רמה — אחרת כותרות יורשות את גדלי ברירת המחדל של Docs
-            pt = HEADING_PT.get(style, BODY_PT if style == "NORMAL_TEXT" else None)
             if pt:
                 reqs.append({"updateTextStyle": {
                     "range": rng,
@@ -585,23 +628,7 @@ def add_report_tab(doc_id: str, account: str, report_path: Path) -> dict:
             "url": f"https://docs.google.com/document/d/{doc_id}/edit?tab={tid}"}
 
 
-# -------------------------------------------------- visual-diff (propose / resolve)
-# שכפול פייתוני של proposeEdits/resolveEdits מ-google-docs-mcp/src/docs.ts (17.07.2026).
-# כל האינדקסים הם אינדקסי Google Docs בתוך לשונית; כל הבקשות נשלחות ב-batchUpdate אחד.
-
-GREEN = {"red": 0.1, "green": 0.5, "blue": 0.1}   # תוספת (docs.ts)
-RED = {"red": 0.8, "green": 0.1, "blue": 0.1}     # מחיקה (docs.ts)
-DRIVE_API = "https://www.googleapis.com/drive/v3/files"
-
-
-def _is_green(fg: dict | None) -> bool:
-    """זיהוי הצבע הירוק שלנו (docs.ts isGreenColor): ירוק דומיננטי, אדום/כחול נמוכים."""
-    if not fg or not fg.get("color", {}).get("rgbColor"):
-        return False
-    rgb = fg["color"]["rgbColor"]
-    r, g, b = rgb.get("red", 0) or 0, rgb.get("green", 0) or 0, rgb.get("blue", 0) or 0
-    return g > 0.4 and r < 0.25 and b < 0.25
-
+# -------------------------------------------------- הצעות עריכה (suggest)
 
 def _pick_tab(doc: dict, tab_id: str | None = None) -> dict:
     """בוחר לשונית לעבודה. ברירת מחדל: הלשונית הראשית (הראשונה שאינה 'דוח עורך')."""
@@ -619,11 +646,24 @@ def _pick_tab(doc: dict, tab_id: str | None = None) -> dict:
     return tabs[0]
 
 
-def _tab_plaintext(tab: dict):
-    """(plainText, indexMapping) ללשונית — כמו getDocContent ב-docs.ts.
+def _find_tab(doc: dict, tab_id: str) -> dict | None:
+    for t in doc.get("tabs", []):
+        if t["tabProperties"]["tabId"] == tab_id:
+            return t
+    return None
 
-    indexMapping ממפה אינדקס תו ב-plainText לאינדקס Google Docs. עברית ב-BMP,
-    תו בודד = code-unit בודד, ולכן חיפוש מחרוזת פייתוני תואם את אינדוקס Docs.
+
+def _u16len(ch: str) -> int:
+    """אורך התו ביחידות UTF-16 — אינדקסי Google Docs נמדדים ב-code units."""
+    return len(ch.encode("utf-16-le")) // 2
+
+
+def _tab_plaintext(tab: dict):
+    """(plainText, indexMapping) ללשונית.
+
+    indexMapping ממפה אינדקס תו פייתוני ב-plainText לאינדקס Google Docs.
+    אינדקסי Docs נמדדים ב-UTF-16 code units, ולכן תו מחוץ ל-BMP (אמוג'י)
+    מקדם את המונה ב-2 — בלי זה אמוג'י אחד מזיז את כל האינדקסים שאחריו.
     """
     plain, mapping = [], []
 
@@ -635,10 +675,11 @@ def _tab_plaintext(tab: dict):
                     tr = pe.get("textRun")
                     if tr and tr.get("content"):
                         s = tr["content"]
-                        start = pe.get("startIndex", 0)
-                        for i, ch in enumerate(s):
+                        offset = pe.get("startIndex", 0)
+                        for ch in s:
                             plain.append(ch)
-                            mapping.append(start + i)
+                            mapping.append(offset)
+                            offset += _u16len(ch)
             elif el.get("table"):
                 for row in el["table"].get("tableRows", []):
                     for cell in row.get("tableCells", []):
@@ -658,24 +699,45 @@ def _norm_edit(rec: dict) -> dict:
     comment = rec.get("comment") or rec.get("note") or ""
     occ = int(rec.get("occurrence", 1))
     if not t:
-        t = "comment" if comment else ("replacement" if find and new else "insertion")
-    return {"type": t, "find": find, "new": new, "occurrence": occ, "comment": comment}
+        if find and new:
+            t = "replacement"
+        elif comment and not new:
+            t = "comment"
+        else:
+            t = "insertion"
+    return {"type": t, "find": find, "new": new, "occurrence": occ,
+            "explicit_occurrence": "occurrence" in rec, "comment": comment}
 
 
-def _editor_note(text: str) -> str:
-    """הערת עורך כטקסט שנכתב **בגוף** כהצעת-הוספה.
+# --- נרמול עוגנים: גרשיים מסולסלים/עבריים, מקפים, NBSP, רווחים כפולים ---
+# הנרמול דו-צדדי (רץ גם על ה-plaintext וגם על העוגן), עם מיפוי אינדקסים
+# שמשמר את המיקום המקורי — כך עוגן עם גרשיים ישרים מוצא טקסט עם ״ עבריים.
 
-    **למה לא הערת Docs אמיתית:** Drive API אינו יכול לייצר הערה מעוגנת בקובץ
-    Google Docs. התיעוד של גוגל מפורש - "Anchored comments on blob files or
-    Google Docs editor files aren't supported... Google Workspace editor apps
-    treat these comments as un-anchored comments". התוצאה: ההערה נוצרת, ה-API
-    מחזיר הצלחה, ודור לא רואה אותה בשוליים. אומת אמפירית 02.08.2026 מול ייצוא
-    docx (`w:commentRangeStart` = 0 בכל הווריאציות שנוסו), ואושר מול התיעוד.
+_NORM_CHAR = {
+    "\u201c": '"', "\u201d": '"', "\u201e": '"',  # מרכאות מסולסלות
+    "\u05f4": '"',                              # גרשיים עבריים
+    "\u2018": "'", "\u2019": "'",              # גרש מסולסל
+    "\u05f3": "'",                              # גרש עברי
+    "\u05be": "-",                              # מקף עברי
+    "\u2013": "-", "\u2014": "-",              # en/em dash
+    "\u00a0": " ",                              # NBSP
+}
 
-    לכן הערת עורך נכתבת כהצעת-הוספה בגוף: מעוגנת בהגדרה, נראית במקום הנכון,
-    מיוחסת לדור, ודחייה בלחיצה אחת מוחקת אותה.
+
+def _normalize_with_map(s: str) -> tuple:
+    """(מחרוזת מנורמלת, מיפוי אינדקס-מנורמל → אינדקס-מקור).
+
+    רווחים כפולים (אחרי המרת NBSP) מכווצים לרווח יחיד; המיפוי מצביע על
+    התו הראשון בקבוצה, כך שהמיקום במקור נשמר.
     """
-    return f" [הערת עורך: {text.strip()}]"
+    out, idx_map = [], []
+    for i, ch in enumerate(s):
+        c = _NORM_CHAR.get(ch, ch)
+        if c == " " and out and out[-1] == " ":
+            continue  # כיווץ רווחים כפולים
+        out.append(c)
+        idx_map.append(i)
+    return "".join(out), idx_map
 
 
 def _find_occurrences(plain: str, needle: str) -> list:
@@ -686,101 +748,81 @@ def _find_occurrences(plain: str, needle: str) -> list:
     return out
 
 
-def _create_comment(file_id: str, token: str, content: str, quoted: str | None = None) -> dict:
-    """הערת Docs דרך Drive API v3 (scope drive מספיק). quotedFileContent מצטט את העוגן."""
-    body = {"content": content}
-    if quoted:
-        body["quotedFileContent"] = {"value": quoted}
-    url = f"{DRIVE_API}/{file_id}/comments?fields=id&supportsAllDrives=true"
-    req = urllib.request.Request(
-        url, method="POST",
-        data=json.dumps(body, ensure_ascii=False).encode(),
-        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
-    with _open(req) as r:
-        return json.load(r)
+def _resolve_anchors(raw_edits: list, plain: str) -> tuple:
+    """רזולוציית עוגנים משותפת (suggest + validate) על אינדקסים פייתוניים ב-plain.
 
+    מחזיר (resolved, skipped):
+      resolved: [{"pstart", "pend", "new", "anchor", "exact"}]  (pstart==pend = הוספה)
+      skipped:  [{"reason", ...}] — כולל not_found / ambiguous / no_anchor /
+                overlap / comment_type_removed.
 
-def propose_edits(doc_id: str, account: str, edits_path: Path, tab_id: str | None = None) -> dict:
-    """מחיל visual-diff מתוך edits.json על הלשונית: ירוק+underline לתוספת, אדום+strike לישן.
-
-    חוק הברזל: הישן **נצבע** אדום ולא נמחק — נראה והפיך עד שדור מכריע ב-resolve.
+    כללים:
+    - התאמה מדויקת קודמת; אם אין — התאמה מנורמלת (גרשיים/מקפים/NBSP/רווחים).
+    - יותר ממופע אחד בלי occurrence מפורש = ambiguous (לא בוחרים בשקט).
+    - insertion בלי עוגן = no_anchor (לא דוחפים לראש המסמך).
+    - type=comment הוסר (10.08.2026): הערות עורך שייכות ל-report.txt — מדולג עם אזהרה.
+    - עריכות חופפות: המאוחרת ברשימה נדחית עם reason=overlap.
     """
-    token = access_token(account)
-    doc = get_doc(doc_id, token)
-    tab = _pick_tab(doc, tab_id)
-    tid = tab["tabProperties"]["tabId"]
-    plain, mapping = _tab_plaintext(tab)
-
-    raw = json.loads(Path(edits_path).read_text(encoding="utf-8"))
-    if isinstance(raw, dict):
-        raw = raw.get("edits") or raw.get("changes") or []
-
-    resolved, notes, skipped = [], 0, []
-    for rec in raw:
+    norm_plain, norm_map = _normalize_with_map(plain)
+    resolved, skipped = [], []
+    for rec in raw_edits:
         e = _norm_edit(rec)
         if e["type"] == "comment":
-            # הערת עורך = הצעת-הוספה בגוף, לא הערת Drive (ראה _editor_note)
-            e = {**e, "type": "insertion", "new": _editor_note(e["comment"])}
-            notes += 1
-        find, new, occ = e["find"], e["new"], e["occurrence"]
-        if e["type"] == "insertion" and not find:
-            resolved.append({"start": 1, "end": 1, "new": new})  # הוספה טהורה → ראש המסמך
+            print("אזהרה: type=comment הוסר מהסקיל — הערות עורך שייכות לדוח העורך "
+                  f"(report.txt) בלבד. ההערה דולגה: {e['comment'][:60]}", file=sys.stderr)
+            skipped.append({"reason": "comment_type_removed", "comment": e["comment"][:60]})
             continue
+        find, new = e["find"], e["new"]
         if not find:
-            skipped.append({"reason": "no-anchor", "new": new[:40]})
+            skipped.append({"reason": "no_anchor", "new": new[:40]})
             continue
-        matches = _find_occurrences(plain, find)
+
+        exact = True
+        matches = [(mp, mp + len(find)) for mp in _find_occurrences(plain, find)]
         if not matches:
-            skipped.append({"reason": "not-found", "text": find[:60]})
+            norm_find, _ = _normalize_with_map(find)
+            if norm_find:
+                for mp in _find_occurrences(norm_plain, norm_find):
+                    s0 = norm_map[mp]
+                    e0 = norm_map[mp + len(norm_find) - 1] + 1
+                    matches.append((s0, e0))
+                exact = False
+        if not matches:
+            skipped.append({"reason": "not_found", "text": find[:60]})
             continue
+        if len(matches) > 1 and not e["explicit_occurrence"]:
+            skipped.append({"reason": "ambiguous", "occurrences": len(matches),
+                            "text": find[:60]})
+            continue
+        occ = e["occurrence"]
         if occ > len(matches):
             skipped.append({"reason": f"occurrence {occ}>{len(matches)}", "text": find[:60]})
             continue
-        mp = matches[occ - 1]
-        start = mapping[mp]
-        end = mapping[mp + len(find) - 1] + 1
+        s0, e0 = matches[occ - 1]
         if e["type"] == "insertion":
-            resolved.append({"start": end, "end": end, "new": new})  # אחרי העוגן, בלי לגעת בו
+            resolved.append({"pstart": e0, "pend": e0, "new": new,
+                             "anchor": find[:60], "exact": exact})
         else:
-            resolved.append({"start": start, "end": end, "new": new})  # החלפה/מחיקה
+            resolved.append({"pstart": s0, "pend": e0, "new": new,
+                             "anchor": find[:60], "exact": exact})
 
-    # חובה: מיון יורד לפי startIndex — אחרת הכנסות מזיזות אינדקסים של עריכות מאוחרות (docs.ts:139)
-    resolved.sort(key=lambda x: x["start"], reverse=True)
-
-    reqs = []
+    # זיהוי חפיפות: העריכה המאוחרת ברשימה שחופפת טווח שכבר התקבל — נדחית.
+    accepted_ranges, final = [], []
     for ed in resolved:
-        s, e, new = ed["start"], ed["end"], ed["new"]
-        if s == e:  # הוספה טהורה
-            if new:
-                reqs.append({"insertText": {"text": new, "location": {"tabId": tid, "index": s}}})
-                reqs.append({"updateTextStyle": {
-                    "range": {"tabId": tid, "startIndex": s, "endIndex": s + len(new)},
-                    "textStyle": {"foregroundColor": {"color": {"rgbColor": GREEN}}, "underline": True},
-                    "fields": "foregroundColor,underline"}})
-        else:  # החלפה/מחיקה: הישן נצבע אדום+קו-חוצה, החדש (אם יש) מוכנס אחריו ירוק+קו-תחתון
-            reqs.append({"updateTextStyle": {
-                "range": {"tabId": tid, "startIndex": s, "endIndex": e},
-                "textStyle": {"foregroundColor": {"color": {"rgbColor": RED}}, "strikethrough": True},
-                "fields": "foregroundColor,strikethrough"}})
-            if new:
-                reqs.append({"insertText": {"text": new, "location": {"tabId": tid, "index": e}}})
-                reqs.append({"updateTextStyle": {
-                    "range": {"tabId": tid, "startIndex": e, "endIndex": e + len(new)},
-                    "textStyle": {"foregroundColor": {"color": {"rgbColor": GREEN}},
-                                  "underline": True, "strikethrough": False},
-                    "fields": "foregroundColor,underline,strikethrough"}})
-
-    if reqs:
-        batch(doc_id, token, reqs)
-
-    return {"id": doc_id, "tab_id": tid, "applied": len(resolved), "requests": len(reqs),
-            "editor_notes": notes,
-            "skipped": skipped,
-            "url": f"https://docs.google.com/document/d/{doc_id}/edit?tab={tid}"}
+        s, ee = ed["pstart"], ed["pend"]
+        conflict = any(
+            (s < ae and ee > as_) or (s == ee and as_ < s < ae)
+            for as_, ae in accepted_ranges)
+        if conflict:
+            skipped.append({"reason": "overlap", "text": ed["anchor"]})
+            continue
+        accepted_ranges.append((s, ee))
+        final.append(ed)
+    return final, skipped
 
 
-def _count_suggestions(doc: dict) -> dict:
-    """סופר מזהי הצעות בתצוגת SUGGESTIONS_INLINE, ומפריד נקי מול תגית-ייבוא."""
+def _suggestion_ids(node) -> tuple:
+    """אוסף מזהי suggestedInsertionIds / suggestedDeletionIds מכל עומק המבנה."""
     ins, dele = set(), set()
 
     def walk(o):
@@ -796,11 +838,8 @@ def _count_suggestions(doc: dict) -> dict:
             for i in o:
                 walk(i)
 
-    walk(doc)
-    allids = ins | dele
-    tagged = [i for i in allids if "import" in i.lower()]
-    return {"insertions": len(ins), "deletions": len(dele),
-            "total": len(allids), "tagged": len(tagged)}
+    walk(node)
+    return ins, dele
 
 
 def suggest_edits(doc_id: str, account: str, edits_path: Path, tab_id: str | None = None) -> dict:
@@ -809,7 +848,10 @@ def suggest_edits(doc_id: str, account: str, edits_path: Path, tab_id: str | Non
     כל החלפה = הצעת-מחיקה של הישן + הצעת-הוספה של החדש; כל תוספת = הצעת-הוספה.
     הישן לא נמחק בפועל — הוא הצעת-מחיקה שדור יכול לדחות (חוק הברזל נשמר: אין
     batchUpdate שדורס טקסט; הכל הפיך דרך accept/reject המובנה של גוגל).
-    אחרי הכתיבה **מאמת** שההצעות נוצרו ולא נבלעו לדריסה.
+
+    אימות אחרי הכתיבה: מזהי ההצעות מצולמים **לפני** הכתיבה (בלשונית הרלוונטית),
+    ורק מזהים חדשים נספרים. overwrote=true אם היו עריכות פעילות ואפס הצעות
+    חדשות — גם על מסמך שכבר יש בו הצעות פתוחות מסבב קודם.
     """
     token = access_token(account)
     doc = get_doc(doc_id, token)
@@ -821,140 +863,79 @@ def suggest_edits(doc_id: str, account: str, edits_path: Path, tab_id: str | Non
     if isinstance(raw, dict):
         raw = raw.get("edits") or raw.get("changes") or []
 
-    resolved, notes, skipped = [], 0, []
-    for rec in raw:
-        e = _norm_edit(rec)
-        if e["type"] == "comment":
-            # הערת עורך = הצעת-הוספה בגוף, לא הערת Drive (ראה _editor_note)
-            e = {**e, "type": "insertion", "new": _editor_note(e["comment"])}
-            notes += 1
-        find, new, occ = e["find"], e["new"], e["occurrence"]
-        if e["type"] == "insertion" and not find:
-            resolved.append({"start": 1, "end": 1, "new": new})
-            continue
-        if not find:
-            skipped.append({"reason": "no-anchor", "new": new[:40]})
-            continue
-        matches = _find_occurrences(plain, find)
-        if not matches:
-            skipped.append({"reason": "not-found", "text": find[:60]})
-            continue
-        if occ > len(matches):
-            skipped.append({"reason": f"occurrence {occ}>{len(matches)}", "text": find[:60]})
-            continue
-        mp = matches[occ - 1]
-        start = mapping[mp]
-        end = mapping[mp + len(find) - 1] + 1
-        if e["type"] == "insertion":
-            resolved.append({"start": end, "end": end, "new": new})  # אחרי העוגן
-        else:
-            resolved.append({"start": start, "end": end, "new": new})  # החלפה/מחיקה
+    # צילום מצב הצעות לפני הכתיבה — מוגבל ללשונית הרלוונטית
+    pre_view = get_doc_view(doc_id, token, "SUGGESTIONS_INLINE")
+    pre_node = _find_tab(pre_view, tid) or pre_view
+    pre_ins, pre_del = _suggestion_ids(pre_node)
+    pre_ids = pre_ins | pre_del
 
-    # מיון יורד לפי startIndex — הכנסה במצב SUGGEST מזיזה אינדקסים ≥ נקודת ההכנסה,
-    # ולכן מעבדים גבוה→נמוך כדי שהעריכות הנמוכות יישארו תקפות (כמו ב-propose).
-    resolved.sort(key=lambda x: x["start"], reverse=True)
+    resolved, skipped = _resolve_anchors(raw, plain)
 
     reqs = []
-    for ed in resolved:
-        s, e, new = ed["start"], ed["end"], ed["new"]
-        if s == e:  # תוספת טהורה
-            if new:
-                reqs.append({"insertText": {"text": new, "location": {"tabId": tid, "index": s}}})
-        else:  # החלפה/מחיקה: קודם הצעת-הוספה של החדש אחרי הישן, ואז הצעת-מחיקה של הישן
+    # מיון יורד לפי startIndex — הכנסה במצב SUGGEST מזיזה אינדקסים ≥ נקודת ההכנסה,
+    # ולכן מעבדים גבוה→נמוך כדי שהעריכות הנמוכות יישארו תקפות.
+    for ed in sorted(resolved, key=lambda x: x["pstart"], reverse=True):
+        ps, pe, new = ed["pstart"], ed["pend"], ed["new"]
+        # מיפוי אינדקס פייתוני → אינדקס Docs (UTF-16)
+        if ps < pe:  # החלפה/מחיקה
+            s = mapping[ps]
+            e = mapping[pe - 1] + _u16len(plain[pe - 1])
             if new:
                 reqs.append({"insertText": {"text": new, "location": {"tabId": tid, "index": e}}})
             reqs.append({"deleteContentRange": {
                 "range": {"tabId": tid, "startIndex": s, "endIndex": e}}})
+        else:  # הוספה טהורה אחרי העוגן
+            e = mapping[ps - 1] + _u16len(plain[ps - 1]) if ps > 0 else 1
+            if new:
+                reqs.append({"insertText": {"text": new, "location": {"tabId": tid, "index": e}}})
 
     if reqs:
         batch_suggest(doc_id, token, reqs)
 
-    # אימות חובה — SUGGEST חייב לייצר הצעות; אם 0 הצעות עם עריכות פעילות → נבלע לדריסה
-    counts = _count_suggestions(get_doc_view(doc_id, token, "SUGGESTIONS_INLINE"))
-    overwrote = bool(reqs) and counts["total"] == 0
+    # אימות חובה — רק הצעות **חדשות** נספרות (הפרש מול הצילום שלפני הכתיבה)
+    post_view = get_doc_view(doc_id, token, "SUGGESTIONS_INLINE")
+    post_node = _find_tab(post_view, tid) or post_view
+    post_ins, post_del = _suggestion_ids(post_node)
+    new_ins = post_ins - pre_ids
+    new_del = post_del - pre_ids
+    new_ids = new_ins | new_del
+    tagged = [i for i in new_ids if "import" in i.lower()]
+    counts = {"insertions": len(new_ins), "deletions": len(new_del),
+              "total": len(new_ids), "tagged": len(tagged),
+              "pre_existing": len(pre_ids)}
+    overwrote = bool(reqs) and len(new_ids) == 0
 
     return {"id": doc_id, "tab_id": tid, "mode": "suggest", "applied": len(resolved),
             "requests": len(reqs), "suggestions": counts,
             "clean": counts["tagged"] == 0 and not overwrote,
             "overwrote": overwrote,
-            "editor_notes": notes,
             "skipped": skipped,
             "url": f"https://docs.google.com/document/d/{doc_id}/edit?tab={tid}"}
 
 
-def _scan_visual_edits(tab: dict) -> list:
-    """סורק את הלשונית ומחזיר טווחי inserted (ירוק+underline) ו-deleted (strikethrough)."""
-    edits = []
+def validate_edits(edits_path: Path, draft_path: Path) -> dict:
+    """ולידציה מקומית של כל העוגנים ב-edits.json מול קובץ טקסט — בלי לגעת ב-Docs.
 
-    def traverse(content):
-        for el in content:
-            p = el.get("paragraph")
-            if p:
-                for pe in p.get("elements", []):
-                    tr = pe.get("textRun")
-                    if tr and tr.get("textStyle"):
-                        st = tr["textStyle"]
-                        start, end = pe.get("startIndex", 0), pe.get("endIndex", 0)
-                        if st.get("strikethrough"):
-                            edits.append({"start": start, "end": end, "type": "deleted"})
-                        elif st.get("underline") and _is_green(st.get("foregroundColor")):
-                            edits.append({"start": start, "end": end, "type": "inserted"})
-            elif el.get("table"):
-                for row in el["table"].get("tableRows", []):
-                    for cell in row.get("tableCells", []):
-                        traverse(cell.get("content", []))
-            elif el.get("tableOfContents"):
-                traverse(el["tableOfContents"].get("content", []))
-
-    traverse(tab["documentTab"]["body"]["content"])
-    return edits
-
-
-def _merge_edits(edits: list) -> list:
-    """ממזג טווחים צמודים מאותו סוג (docs.ts mergeEdits)."""
-    if not edits:
-        return []
-    edits.sort(key=lambda x: x["start"])
-    merged = [dict(edits[0])]
-    for cur in edits[1:]:
-        last = merged[-1]
-        if cur["type"] == last["type"] and cur["start"] == last["end"]:
-            last["end"] = cur["end"]
-        else:
-            merged.append(dict(cur))
-    return merged
-
-
-def resolve_edits(doc_id: str, account: str, action: str, tab_id: str | None = None) -> dict:
-    """מנקה את סימוני ה-visual-diff לפי החלטת דור (docs.ts resolveEdits).
-
-    accept: מוחק את הישן-האדום, מנקה עיצוב מהחדש (נשאר שחור).
-    reject: מוחק את החדש-הירוק, מנקה עיצוב מהישן (חוזר לשחור).
+    מדפיס דוח JSON: found / ambiguous / missing (+ skipped אחרים).
+    מריצים לפני ההעלאה — עוגן שנופל כאן ייפול גם בענן.
     """
-    token = access_token(account)
-    doc = get_doc(doc_id, token)
-    tab = _pick_tab(doc, tab_id)
-    tid = tab["tabProperties"]["tabId"]
-    merged = _merge_edits(_scan_visual_edits(tab))
-    # יורד לפי startIndex — מחיקה לא מזיזה אינדקסים של עריכות באינדקס נמוך יותר
-    merged.sort(key=lambda x: x["start"], reverse=True)
+    plain = draft_path.read_text(encoding="utf-8")
+    raw = json.loads(edits_path.read_text(encoding="utf-8"))
+    if isinstance(raw, dict):
+        raw = raw.get("edits") or raw.get("changes") or []
 
-    reqs = []
-    for ed in merged:
-        s, e, ty = ed["start"], ed["end"], ed["type"]
-        rng = {"tabId": tid, "startIndex": s, "endIndex": e}
-        clear = {"updateTextStyle": {"range": rng, "textStyle": {},
-                                     "fields": "foregroundColor,underline,strikethrough"}}
-        if action == "accept":
-            reqs.append({"deleteContentRange": {"range": rng}} if ty == "deleted" else clear)
-        else:  # reject
-            reqs.append({"deleteContentRange": {"range": rng}} if ty == "inserted" else clear)
-
-    if reqs:
-        batch(doc_id, token, reqs)
-    return {"id": doc_id, "tab_id": tid, "action": action, "resolved": len(merged),
-            "requests": len(reqs),
-            "url": f"https://docs.google.com/document/d/{doc_id}/edit?tab={tid}"}
+    resolved, skipped = _resolve_anchors(raw, plain)
+    ambiguous = [s for s in skipped if s.get("reason") == "ambiguous"]
+    missing = [s for s in skipped if s.get("reason") == "not_found"]
+    other = [s for s in skipped if s.get("reason") not in ("ambiguous", "not_found")]
+    return {
+        "mode": "validate", "draft": str(draft_path), "edits": len(raw),
+        "found": [{"anchor": r["anchor"], "exact": r["exact"]} for r in resolved],
+        "ambiguous": ambiguous,
+        "missing": missing,
+        "skipped_other": other,
+        "ok": not ambiguous and not missing and not other,
+    }
 
 
 def main():
@@ -970,36 +951,40 @@ def main():
     ap.add_argument("--enforce-font", action="store_true",
                     help=f"אכיפת {FONT} {BODY_PT} על כל הלשוניות של --doc")
     ap.add_argument("--doc", default=None, metavar="DOC_ID",
-                    help="מזהה ה-Google Doc עבור --report-tab / --enforce-font")
+                    help="מזהה ה-Google Doc עבור --report-tab / --enforce-font / --suggest")
     ap.add_argument("--only-tab", default=None, metavar="TAB_ID",
                     help="הגבלת --enforce-font ללשונית אחת (לא לגעת בשאר)")
     ap.add_argument("--mark-headings", default=None, metavar="HEADINGS",
                     help="סימון כותרות הכתבה ב---doc כסגנון אמיתי (ביניים=H2)")
     ap.add_argument("--suggest", default=None, metavar="EDITS_JSON",
-                    help="ברירת מחדל: החלת edits.json כהצעות Docs אמיתיות (writeMode SUGGEST) על --doc")
-    ap.add_argument("--propose", default=None, metavar="EDITS_JSON",
-                    help="אופציה משנית: visual-diff (ירוק/אדום) על --doc מתוך edits.json")
-    ap.add_argument("--resolve", default=None, choices=["accept", "reject"],
-                    help="ניקוי הסימון על --doc: accept משאיר את החדש, reject מחזיר את הישן")
+                    help="החלת edits.json כהצעות Docs אמיתיות (writeMode SUGGEST) על --doc")
+    ap.add_argument("--validate", default=None, metavar="EDITS_JSON",
+                    help="ולידציה מקומית של עוגני edits.json מול --draft (בלי לגעת ב-Docs)")
+    ap.add_argument("--draft", default=None, metavar="DRAFT_TXT",
+                    help="קובץ הטיוטה עבור --validate")
     ap.add_argument("--tab", default=None, metavar="TAB_ID",
-                    help="הגבלת --propose/--resolve ללשונית ספציפית (ברירת מחדל: הראשית)")
+                    help="הגבלת --suggest ללשונית ספציפית (ברירת מחדל: הראשית)")
     a = ap.parse_args()
 
-    if a.suggest or a.propose or a.resolve:
+    if a.validate:
+        if not a.draft:
+            sys.exit("--validate מחייב --draft <draft.txt>")
+        ep = Path(a.validate).expanduser().resolve()
+        dp = Path(a.draft).expanduser().resolve()
+        if not ep.exists():
+            sys.exit(f"קובץ edits.json לא נמצא: {ep}")
+        if not dp.exists():
+            sys.exit(f"קובץ הטיוטה לא נמצא: {dp}")
+        print(json.dumps(validate_edits(ep, dp), ensure_ascii=False))
+        return
+
+    if a.suggest:
         if not a.doc:
-            sys.exit("--suggest / --propose / --resolve מחייבים --doc <doc_id>")
-        if a.suggest:
-            ep = Path(a.suggest).expanduser().resolve()
-            if not ep.exists():
-                sys.exit(f"קובץ edits.json לא נמצא: {ep}")
-            info = suggest_edits(a.doc, a.account, ep, a.tab)
-        elif a.propose:
-            ep = Path(a.propose).expanduser().resolve()
-            if not ep.exists():
-                sys.exit(f"קובץ edits.json לא נמצא: {ep}")
-            info = propose_edits(a.doc, a.account, ep, a.tab)
-        else:
-            info = resolve_edits(a.doc, a.account, a.resolve, a.tab)
+            sys.exit("--suggest מחייב --doc <doc_id>")
+        ep = Path(a.suggest).expanduser().resolve()
+        if not ep.exists():
+            sys.exit(f"קובץ edits.json לא נמצא: {ep}")
+        info = suggest_edits(a.doc, a.account, ep, a.tab)
         print(json.dumps(info, ensure_ascii=False))
         return
 
@@ -1026,7 +1011,7 @@ def main():
         return
 
     if not a.docx:
-        sys.exit("נדרש נתיב docx (או --report-tab / --enforce-font עם --doc)")
+        sys.exit("נדרש נתיב docx (או --report-tab / --enforce-font / --suggest / --validate)")
     p = Path(a.docx).expanduser().resolve()
     if not p.exists() or p.suffix != ".docx":
         sys.exit(f"קובץ docx לא נמצא: {p}")
