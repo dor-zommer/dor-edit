@@ -7,6 +7,8 @@
 "בתגובה נמסר", פסיק לפני ש' מחוברת, "על-מנת" במקף, כפל רווחים,
 וביטויים מהרשימה השחורה. מדפיס JSON של הפרות (סוג, מחרוזת, הקשר ~40 תווים).
 exit code 1 אם נמצאו הפרות, 0 אם נקי. בלוקי קוד מגודרים (```) מוחרגים.
+קדושת הציטוט: הפרות שכולן בתוך ציטוט (״...״ או "...") מדווחות בנפרד
+תחת in_quote_review ואינן מפילות את ה-exit code; חריג — em dash תמיד נאכף.
 
 שימוש: lint_hebrew.py <קובץ.txt או edits.json>
 """
@@ -36,6 +38,36 @@ BLACKLIST = [
 # מרכאות ישרות כפולות בסביבה עברית: תו עברי בטווח 3 תווים לפני או אחרי
 STRAIGHT_QUOTE = re.compile(rf'(?:[{HEBREW}][^\n"]{{0,2}}"|"[^\n"]{{0,2}}[{HEBREW}])')
 
+# תווי מרכאות כפולות שיכולים לתחום ציטוט: ישרות, עבריות (״), מסולסלות
+QUOTE_DELIMS = re.compile('["״“”„]')
+
+
+def quote_spans(text):
+    """טווחי *תוכן* הציטוט (בין המרכאות, בלעדיהן) לפי זוגות מרכאות כפולות.
+
+    מרכאות בתוך מילה (ש"ח, בג"ץ — תו אות משני הצדדים) אינן תוחמות ציטוט.
+    זיווג נאיבי: מרכאה תוחמת אי-זוגית פותחת, זוגית סוגרת. ציטוט לא חוצה שורה.
+    המרכאות עצמן אינן חלק מהתוכן המוגן — סימני הציטוט הם פיסוק של הכותב
+    ומותר לתקנם (ישרות ← עבריות) בלי לגעת בציטוט עצמו.
+    """
+    delims = []
+    for m in QUOTE_DELIMS.finditer(text):
+        i = m.start()
+        prev = text[i - 1] if i > 0 else ""
+        nxt = text[i + 1] if i + 1 < len(text) else ""
+        if prev.isalnum() and nxt.isalnum():
+            continue  # גרשיים של ראשי תיבות — לא גבול ציטוט
+        delims.append(i)
+    spans = []
+    for a, b in zip(delims[0::2], delims[1::2]):
+        if "\n" not in text[a:b]:
+            spans.append((a + 1, b))
+    return spans
+
+
+def in_any_span(spans, start, end):
+    return any(start >= a and end <= b for a, b in spans)
+
 
 def strip_code_blocks(text):
     """מחליף בלוקי קוד מגודרים ברווחים באותו אורך, כדי לשמר אינדקסים."""
@@ -48,14 +80,23 @@ def context(text, start, end, radius=40):
 
 
 def lint_text(text, source=""):
+    """מחזיר הפרות; הפרה שכולה בתוך ציטוט מסומנת in_quote=True.
+
+    קדושת הציטוט: טקסט מצוטט לא מתקנים — הפרות בתוכו מדווחות לבדיקה ידנית
+    בלבד ולא מפילות את ה-exit code. חריג: em dash מדווח תמיד כרגיל,
+    כי חוק המקפים חל גם בתוך ציטוטים.
+    """
     violations = []
     clean = strip_code_blocks(text)
+    spans = quote_spans(clean)
 
     def add(kind, m):
+        quoted = kind != "em_dash" and in_any_span(spans, m.start(), m.end())
         violations.append({
             "type": kind,
             "match": m.group(0),
             "context": context(clean, m.start(), m.end()),
+            "in_quote": quoted,
             **({"source": source} if source else {}),
         })
 
@@ -104,9 +145,19 @@ def main():
     else:
         violations.extend(lint_text(raw))
 
-    print(json.dumps({"file": path, "violations": violations,
-                      "count": len(violations)}, ensure_ascii=False, indent=2))
-    sys.exit(1 if violations else 0)
+    actionable = [v for v in violations if not v["in_quote"]]
+    quoted = [v for v in violations if v["in_quote"]]
+    print(json.dumps({
+        "file": path,
+        "violations": actionable,
+        "count": len(actionable),
+        "in_quote_review": {
+            "note": "לבדיקה ידנית - בתוך ציטוט, לא לתקן אוטומטית",
+            "violations": quoted,
+            "count": len(quoted),
+        },
+    }, ensure_ascii=False, indent=2))
+    sys.exit(1 if actionable else 0)
 
 
 if __name__ == "__main__":

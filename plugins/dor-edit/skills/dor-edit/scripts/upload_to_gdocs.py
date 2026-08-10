@@ -373,26 +373,40 @@ def mark_headings(doc_id: str, account: str, headings_path: Path,
                          "level": int(it.get("level", 2))})
 
     paras = list(_para_texts(tab))
+    # התאמה סובלנית: קודם התאמה מדויקת, ואם אין — התאמה מנורמלת
+    # (_normalize_with_map: גרשיים/מקפים/NBSP/רווחים כפולים), כמו ברזולוציית עוגנים.
+    norm_paras = [(_normalize_with_map(p[0])[0], p) for p in paras]
     reqs, matched, missed = [], [], []
     for h in norm:
         if not h["text"]:
             continue
         hit = next((p for p in paras if p[0] == h["text"]), None)
         if not hit:
+            ht = _normalize_with_map(h["text"])[0]
+            hit = next((p for nt, p in norm_paras if nt == ht), None)
+        if not hit:
             missed.append(h["text"][:60])
             continue
         _, s, e = hit
+        rng = {"tabId": tid, "startIndex": s, "endIndex": e}
         reqs.append({"updateParagraphStyle": {
-            "range": {"tabId": tid, "startIndex": s, "endIndex": e},
+            "range": rng,
             "paragraphStyle": {"namedStyleType": f"HEADING_{h['level']}",
                                "direction": "RIGHT_TO_LEFT"},
             "fields": "namedStyleType,direction"}})
+        # עיצוב נקודתי של הפסקה שסומנה בלבד — פונט הסקיל וגודל לפי הרמה.
+        # אין אכיפת פונט גורפת על הלשונית: שאר המסמך של דור לא נוגעים בו.
+        pt = HEADING_PT.get(f"HEADING_{h['level']}", BODY_PT)
+        reqs.append({"updateTextStyle": {
+            "range": rng,
+            "textStyle": {
+                "weightedFontFamily": {"fontFamily": FONT, "weight": 700},
+                "fontSize": {"magnitude": pt, "unit": "PT"}},
+            "fields": "weightedFontFamily,fontSize"}})
         matched.append({"text": h["text"][:60], "level": h["level"]})
 
     if reqs:
         batch(doc_id, token, reqs)
-        # אכיפה חוזרת כדי שהכותרות יקבלו את גדלי ההיררכיה (20/17/15)
-        batch(doc_id, token, font_requests(get_doc(doc_id, token), only_tab=tid))
 
     return {"id": doc_id, "tab_id": tid, "marked": len(matched),
             "headings": matched, "not_found": missed,
@@ -640,7 +654,8 @@ def add_report_tab(doc_id: str, account: str, report_path: Path) -> dict:
     md = report_path.read_text(encoding="utf-8")
     if appending:
         # מפריד ויזואלי, כדי שברור מה נוסף בסבב הזה ומה כבר היה שם.
-        md = f"\n— עדכון דוח ({_stamp()}) —\n\n" + md
+        # חוק המקפים: מקף רגיל עם רווחים, לעולם לא קו מפריד ארוך במסמך עברי.
+        md = f"\n- עדכון דוח ({_stamp()}) -\n\n" + md
     # רנדור אמיתי: טבלאות Docs, קישורים על הטקסט, הדגשה, בולטים, כותרות בהיררכיה.
     render_markdown(doc_id, token, tid, md, at)
 
