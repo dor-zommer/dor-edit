@@ -403,18 +403,30 @@ def mark_headings(doc_id: str, account: str, headings_path: Path,
 # Google Docs לא מרנדר מארקדאון. בלי השכבה הזו הדוח נכתב כטקסט גולמי:
 # צינורות במקום טבלה, כוכביות במקום הדגשה, [טקסט](url) במקום קישור, ו---- מיותם.
 
-_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)\s]+)\)")
+_LINK_RE = re.compile(r"(\*\*)?\[([^\]]+)\]\(([^)\s]+)\)(?(1)\*\*)")
 _BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
+
+
+def _u16(s: str) -> int:
+    """אורך מחרוזת ביחידות UTF-16 — אינדקסי Google Docs נמדדים ב-code units,
+    ולכן תו מחוץ ל-BMP (אמוג'י) תופס 2 יחידות ולא אחת."""
+    return len(s.encode("utf-16-le")) // 2
 
 
 def _md_spans(text: str) -> list:
     """מפרק שורה ל-spans עם bold/link. מסיר את תווי המארקדאון עצמם."""
     spans, pos = [], 0
-    # קודם קישורים, ואז הדגשה בתוך מה שנשאר
+    # קודם קישורים (כולל **[..](..)** מודגש-עוטף), ואז הדגשה בתוך מה שנשאר
     for m in _LINK_RE.finditer(text):
         if m.start() > pos:
             spans.extend(_md_bold_spans(text[pos:m.start()]))
-        spans.append({"t": m.group(1), "bold": False, "link": m.group(2)})
+        label, bold = m.group(2), bool(m.group(1))
+        inner = _BOLD_RE.fullmatch(label)
+        if inner:  # [**טקסט**](url) — הדגשה בתוך טקסט הקישור
+            label, bold = inner.group(1), True
+        else:
+            label = label.replace("**", "")
+        spans.append({"t": label, "bold": bold, "link": m.group(3)})
         pos = m.end()
     if pos < len(text):
         spans.extend(_md_bold_spans(text[pos:]))
@@ -473,11 +485,18 @@ def _md_blocks(md: str) -> list:
             blocks.append({"kind": "bullet", "spans": _md_spans(re.sub(r"^[-*+]\s+", "", s))})
         elif re.match(r"^\d+[.)]\s+", s):
             blocks.append({"kind": "numbered", "spans": _md_spans(re.sub(r"^\d+[.)]\s+", "", s))})
+        elif s.startswith(">"):
+            # blockquote — הסימן `>` מוסר, הפסקה תרונדר עם הזחה
+            inner = re.sub(r"^(?:>\s?)+", "", s)
+            blocks.append({"kind": "quote", "spans": _md_spans(inner)})
         elif s:
             blocks.append({"kind": "para", "spans": _md_spans(s)})
-        else:
+        elif blocks and blocks[-1]["kind"] != "blank":
+            # שורה ריקה אחת נשמרת כמרווח; רצף שורות ריקות לא מייצר רעש
             blocks.append({"kind": "blank", "spans": []})
         i += 1
+    while blocks and blocks[-1]["kind"] == "blank":
+        blocks.pop()
     return blocks
 
 
@@ -485,7 +504,7 @@ def _style_reqs_for_spans(tid: str, spans: list, start: int) -> list:
     """updateTextStyle לכל span שיש לו bold/link. מחזיר גם את האינדקס הסופי."""
     reqs, idx = [], start
     for sp in spans:
-        e = idx + len(sp["t"])
+        e = idx + _u16(sp["t"])
         if sp["bold"] or sp["link"]:
             ts, fields = {}, []
             if sp["bold"]:
@@ -510,11 +529,16 @@ def _render_text_blocks(tid: str, blocks: list, at: int) -> tuple:
     idx, bullet_runs = at, []
     for b in blocks:
         line = "".join(s["t"] for s in b["spans"])
-        start, end = idx, idx + len(line) + 1
+        start, end = idx, idx + _u16(line) + 1
         ps, fields = {"direction": "RIGHT_TO_LEFT"}, "direction"
         if b["kind"] == "heading":
             ps["namedStyleType"] = f"HEADING_{b['level']}"
             fields += ",namedStyleType"
+        elif b["kind"] == "quote":
+            # blockquote — הזחה מצד הפתיחה (ימין ב-RTL) במקום `>` גולמי
+            ps["indentStart"] = {"magnitude": 36, "unit": "PT"}
+            ps["indentFirstLine"] = {"magnitude": 36, "unit": "PT"}
+            fields += ",indentStart,indentFirstLine"
         elif b["kind"] in ("bullet", "numbered"):
             bullet_runs.append((start, end, b["kind"]))
         reqs.append({"updateParagraphStyle": {
@@ -554,11 +578,11 @@ def _fill_table(doc_id: str, token: str, tid: str, rows: list) -> None:
             continue
         reqs.append({"insertText": {"location": {"tabId": tid, "index": idx}, "text": txt}})
         reqs.append({"updateParagraphStyle": {
-            "range": {"tabId": tid, "startIndex": idx, "endIndex": idx + len(txt)},
+            "range": {"tabId": tid, "startIndex": idx, "endIndex": idx + _u16(txt)},
             "paragraphStyle": {"direction": "RIGHT_TO_LEFT"}, "fields": "direction"}})
         if is_header:
             reqs.append({"updateTextStyle": {
-                "range": {"tabId": tid, "startIndex": idx, "endIndex": idx + len(txt)},
+                "range": {"tabId": tid, "startIndex": idx, "endIndex": idx + _u16(txt)},
                 "textStyle": {"bold": True}, "fields": "bold"}})
         else:
             reqs.extend(_style_reqs_for_spans(tid, spans, idx))
