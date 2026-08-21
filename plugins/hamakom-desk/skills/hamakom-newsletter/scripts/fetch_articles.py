@@ -120,7 +120,7 @@ def main():
         "lead": news[0] if news else "",
         "data_stat": {"label": "הנתון של השבוע", "img": "", "alt": "", "url": ""},
         "followup":  {"slug": "", "banner_title": "בעקבות הפרסום", "banner_sub": ""},
-        "rundown_label": "עוד שברים שקרו השבוע במקום הכי חם בגיהנום",
+        "rundown_label": "עוד דברים שקרו השבוע במקום הכי חם בגיהנום",
         "rundown": news[2:] if len(news) > 2 else news[1:],
         "photo_of_week": {
             "img": "",

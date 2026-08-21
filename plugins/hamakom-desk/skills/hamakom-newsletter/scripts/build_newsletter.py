@@ -49,6 +49,30 @@ else:
 FONT_HEAD = "'Suez One','Frank Ruhl Libre',Georgia,serif"
 FONT      = "'IBM Plex Sans Hebrew','Heebo',-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif"
 
+# ---------- DS override (סבב פיגמה) ----------
+# ds.override.json נוצר ע"י from_figma.py מעריכות עיצוב שדור עשה בפיגמה.
+# מותר לדרוס רק טוקנים מהרשימה הלבנה — כדי ששינוי בפיגמה לא ישבור את ה-HTML של המייל.
+_DS_TOKENS = {"INK", "IVORY", "FRAME", "PAPER", "TERRA", "TERRA_D", "SC_TERRA", "SAGE",
+              "HEATHER", "INK2", "INK3", "LINE", "ON_DARK", "ON_DARK_SOFT", "WHITE",
+              "ACCENT", "ACCENT_D", "ACCENT_SC", "FONT_HEAD", "FONT"}
+_DS_PATH = os.environ.get("DS_OVERRIDE", os.path.join(os.path.dirname(os.path.abspath(ISSUE)) or ".",
+                                                     "ds.override.json"))
+DS_APPLIED = {}
+if os.path.exists(_DS_PATH):
+    try:
+        _ds = json.load(open(_DS_PATH, encoding="utf-8")) or {}
+        for _k, _v in _ds.items():
+            if _k in _DS_TOKENS and isinstance(_v, str) and _v.strip():
+                globals()[_k] = _v.strip()
+                DS_APPLIED[_k] = _v.strip()
+    except Exception as _e:
+        print(f"  ds.override skip: {_e}")
+
+# ---------- overrides תוכן (סבב פיגמה) ----------
+# cfg['overrides'][slug] = {title, excerpt, img, link} — דורס את articles.json בלי לגעת בו.
+# articles.json הוא מראה של וורדפרס; עריכות ידניות נכתבות לכאן בלבד.
+OV = cfg.get("overrides", {}) or {}
+
 # ---------- helpers ----------
 def _ph(x):
     return (not x) or str(x).strip() == "" or str(x).strip().startswith("<<<")
@@ -69,7 +93,12 @@ def _proof(s):
     s = re.sub(r"\s*[—–]\s*", " - ", s)
     return s
 
-def rec(s):    return ART.get(s, {})
+def rec(s):
+    """רשומת הכתבה: articles.json ממוזג עם cfg['overrides'][slug] (העריכות מפיגמה גוברות)."""
+    r = dict(ART.get(s, {}))
+    o = OV.get(s) or {}
+    r.update({k: v for k, v in o.items() if v not in (None, "")})
+    return r
 def link(s):   return (rec(s).get("link", "#")) + UTM
 def img(s):    return rec(s).get("img", "")
 def title(s):  return re.sub(r"\s*\|\s*(תחקיר|טור|דעה)\s*$", "", rec(s).get("title", s or "")).strip()
@@ -412,41 +441,75 @@ def footer():
             f'<a href="{{{{unsubscribe}}}}" style="color:#888;text-decoration:underline">להסרה מרשימת התפוצה</a></p></td></tr>')
 
 # ---------- assemble ----------
+ORDER_INFO = []
+
+def _compose(blocks):
+    """מחבר את הבלוקים. אם cfg['section_order'] קיים (נוצר מסבב פיגמה) — הוא קובע את
+    הסדר, ובלוק שלא מופיע בו יורד מהגיליון. chrome_top/chrome_bottom תמיד ננעלים
+    בקצוות כדי לא לשבור את מבנה המייל."""
+    order = [s for s in (cfg.get("section_order") or []) if s]
+    if not order:
+        return "".join(h for _, h in blocks)
+    order = [re.sub(r"^sec:", "", s) for s in order]
+    d = dict(blocks)
+    top = d.pop("chrome_top", ""); bot = d.pop("chrome_bottom", "")
+    seq = [n for n in order if n in d]
+    dropped = [n for n in d if n not in seq]
+    ORDER_INFO.append("סדר: " + " → ".join(seq))
+    if dropped:
+        ORDER_INFO.append("הורדו: " + ", ".join(dropped))
+    missing = [n for n in order if n not in d]
+    if missing:
+        ORDER_INFO.append("בסדר אך לא נבנו (ריקים): " + ", ".join(missing))
+    return top + "".join(d[n] for n in seq) + bot
+
+
 def build():
     no_editor = os.environ.get("NO_EDITOR", "") in ("1", "true", "yes") or bool(cfg.get("no_editor"))
-    rows = [sig_bar(), header()]
+    # בלוקים בעלי שם — כדי שסבב הפיגמה יוכל לשנות סדר/להסיר פינה (cfg['section_order']).
+    blocks = []                       # [(name, html)] בסדר ברירת המחדל
+    def add(name, html):
+        if html:
+            blocks.append((name, html))
+
+    add("chrome_top", sig_bar() + header())
     if not no_editor:
-        rows.append(note())
-    rows.append(project())
-    rows.append(month_stats())          # ריק בשבועי (אין stats); "החודש במספרים" בחודשי
+        add("editor_note", note())
+    add("project", project())
+    add("month_stats", month_stats())   # ריק בשבועי (אין stats); "החודש במספרים" בחודשי
     if not _ph(cfg.get("lead", "")):
-        rows.append(lead(cfg["lead"], cfg.get("lead_kicker", "תחקיר השבוע")))
-    rows.append(data_strip())
-    rows.append(followup())
-    rows.append(section_label(cfg.get("rundown_label", "עוד דברים שקרו השבוע במקום הכי חם בגיהנום")))
+        add("lead", lead(cfg["lead"], cfg.get("lead_kicker", "תחקיר השבוע")))
+    add("data_stat", data_strip())
+    add("followup", followup())
+
+    # rundown: התווית + הפריטים הם בלוק אחד; תמונת השבוע משתלבת אחרי place_after פריטים.
     rundown = [s for s in (cfg.get("rundown", []) or []) if not _ph(s)]
-    place = cfg.get("photo_of_week", {}).get("place_after", 1)
-    photo_done = False
+    place = (cfg.get("photo_of_week", {}) or {}).get("place_after", 1)
+    _rd = section_label(cfg.get("rundown_label", "עוד דברים שקרו השבוע במקום הכי חם בגיהנום"))
+    _photo, photo_done = photo_strip(), False
+    # אם נתון section_order — התמונה היא פינה עצמאית והשילוב לפי place_after מבוטל.
+    interleave = not (cfg.get("section_order") or [])
     for i, s in enumerate(rundown):
-        rows.append(item(s, featured=(i == 0)))   # ראשון בולט, השאר רשימה קומפקטית — היררכיה
-        if i == place:
-            rows.append(photo_strip()); photo_done = True
+        _rd += item(s, featured=(i == 0))   # ראשון בולט, השאר רשימה קומפקטית — היררכיה
+        if interleave and i == place:
+            _rd += _photo; photo_done = True
+    add("rundown", _rd)
     if not photo_done:
-        rows.append(photo_strip())
+        add("photo_of_week", _photo)
+
     he = cfg.get("hero", {}) or {}
     if not _ph(he.get("slug", "")):
-        rows.append(hero(he["slug"], he.get("kicker", "מתחת לרדאר")))
-    rows.append(ongoing_story())     # סיפורים שלא שחררנו — פינה קבועה
-    rows.append(reel_strip())        # ברשתות שלנו — פינה קבועה
-    rows.append(collab_box())        # שיתוף (הפורום) — פינה קבועה
-    rows.append(quote_strip())
-    rows.append(opinions_block())
-    rows.append(reads_block())
+        add("hero", hero(he["slug"], he.get("kicker", "מתחת לרדאר")))
+    add("ongoing", ongoing_story())   # סיפורים שלא שחררנו — פינה קבועה
+    add("reel", reel_strip())         # ברשתות שלנו — פינה קבועה
+    add("collab", collab_box())       # שיתוף (הפורום) — פינה קבועה
+    add("quote", quote_strip())
+    add("opinions", opinions_block())
+    add("reads", reads_block())
     # אין בלוק SLAPP/קרן הגנה — הקמפיין נגמר.
-    rows.append(banner_block())
-    rows.append(footer())
+    add("chrome_bottom", banner_block() + footer())
 
-    inner = "".join(r for r in rows if r)
+    inner = _compose(blocks)
     pre = cfg.get("preheader", "")
     doc = f'''<!DOCTYPE html>
 <html dir="rtl" lang="he" xmlns="http://www.w3.org/1999/xhtml">
@@ -491,6 +554,12 @@ img{{-ms-interpolation-mode:bicubic;}}
           " td:", c.count("<td") - c.count("</td"),
           " table:", c.count("<table") - c.count("</table"))
     print("TO FILL  →  " + ("  |  ".join(dict.fromkeys(MISSING)) if MISSING else "no placeholders."))
+    if DS_APPLIED:
+        print("DS override →  " + ", ".join(f"{k}={v}" for k, v in DS_APPLIED.items()))
+    if OV:
+        print(f"content overrides →  {len(OV)} slugs: " + ", ".join(list(OV)[:6]))
+    for _l in ORDER_INFO:
+        print("section_order →  " + _l)
     return out
 
 if __name__ == "__main__":
