@@ -1,5 +1,5 @@
 ---
-allowed-tools: Read Write Edit Grep Glob Bash WebSearch WebFetch TaskCreate TaskUpdate mcp__osint-db__query_db
+allowed-tools: Read Write Edit Grep Glob Bash WebSearch WebFetch TaskCreate TaskUpdate
 name: hamakom-weekly-lineup
 description: >-
   Builds Dor's interactive WEEKLY LINEUP (ליינאפ שבועי) for "המקום הכי חם בגיהנום" — a

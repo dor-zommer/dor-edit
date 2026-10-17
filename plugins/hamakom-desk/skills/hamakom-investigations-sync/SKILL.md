@@ -1,5 +1,5 @@
 ---
-allowed-tools: Read Write Edit Grep Glob Bash WebSearch WebFetch TaskCreate TaskUpdate mcp__osint-db__query_db
+allowed-tools: Read Write Edit Grep Glob Bash WebSearch WebFetch TaskCreate TaskUpdate
 name: hamakom-investigations-sync
 description: >-
   Keeps the "המקום הכי חם בגיהנום" (ha-makom.co.il) editorial workflow in sync between the
