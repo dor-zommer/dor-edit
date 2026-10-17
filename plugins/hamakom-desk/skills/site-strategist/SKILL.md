@@ -1,5 +1,5 @@
 ---
-allowed-tools: Read Write Edit Grep Glob Bash WebSearch WebFetch TaskCreate TaskUpdate mcp__osint-db__query_db
+allowed-tools: Read Write Edit Grep Glob Bash WebSearch WebFetch TaskCreate TaskUpdate
 name: site-strategist
 description: >
   ניתוח עומק של ה-DNA המערכתי, סגנון הכתיבה והאסטרטגיה של אתר עיתונות — ויצירת "מצפן מערכתי" שמגדיר זהות, קהל יעד, כללי כתיבה ופערי סיקור.
