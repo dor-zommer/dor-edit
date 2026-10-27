@@ -18,9 +18,15 @@ write_posts.py — מייצר שלד קופי לכל פלטפורמה לפי ה-
   · ריסון: 7 סימני קריאה ב-299 פוסטים; אימוג'ים סמליים בלבד (12%); פנייה לקורא 2.7%
   · em dash — פספוס עריכה, לא כוונה. מנורמל ל-" - ".
 
+תגיות UTM: כל קישור לכתבה יוצא עם utm_source של הפלטפורמה, utm_medium=social ו-utm_campaign
+= ה-slug של הכתבה. בלי זה טלגרם, וואטסאפ ו-X לא נראים בכלל ב-Google Analytics (הדפדפן
+שבתוך האפליקציה לא מעביר מאיפה הגיעו, והביקור נספר כ"ישיר"). אינסטגרם מתייג לבד (ig/social),
+ושיתוף אוטומטי של Jetpack לפייסבוק מתייג לבד (facebook/jetpack_social).
+
 הרצה: python3 write_posts.py article.json OUT_DIR
 """
 import json, os, re, sys
+from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 
 HASHTAG = "#המקום_הכי_חם_בגיהנום"
 CREDIT = "צילום: פלאש 90"
@@ -28,6 +34,19 @@ SENSITIVE_NOTE = "למצולמים אין קשר לכתבה"
 # מילות-סף לתוכן רגיש → מוסיפות את שורת ההסתייגות (מוסכמת האתר)
 SENSITIVE = ("תקיפה מינית", "אונס", "הטרדה מינית", "התעללות", "פגיעה מינית",
              "אובדנות", "התאבדות", "קטין", "נפגעות", "נפגעי")
+
+
+def tagged(art, source):
+    """הקישור לכתבה עם תגיות UTM לפלטפורמה. תגית קיימת באותו שם לא נדרסת."""
+    link = (art.get("link") or "").strip()
+    if not link:
+        return ""
+    u = urlsplit(link)
+    q = dict(parse_qsl(u.query, keep_blank_values=True))
+    slug = [p for p in u.path.split("/") if p][-1:] or ["home"]
+    for k, v in (("utm_source", source), ("utm_medium", "social"), ("utm_campaign", slug[0])):
+        q.setdefault(k, v)
+    return urlunsplit((u.scheme, u.netloc, u.path, urlencode(q), u.fragment))
 
 
 def proof(s):
@@ -74,7 +93,7 @@ def facebook(art):
         "<<< שורת פתיח: הצהרת ממצא חדה >>> | <<< ז'אנר/ייחוס >>>",
         "<<< 2 פסקאות קצרות: הממצא + ההקשר. ~60-80 מילים. גוף שלישי, בלי פנייה לקורא >>>",
         sig(art),
-        art.get("link", ""),
+        tagged(art, "facebook"),
         credit_block(art),
     ])
 
@@ -82,18 +101,18 @@ def facebook(art):
 def x_post(art):
     """X — הכי קצר, הממצא בלבד + לינק."""
     return ("<<< הממצא בשורה אחת חדה, עד ~200 תווים. בלי סימן קריאה >>>\n\n"
-            + art.get("link", ""))
+            + tagged(art, "x"))
 
 
-def whatsapp(art):
-    """וואטסאפ/טלגרם — ידיעה קצרה לקבוצות."""
+def whatsapp(art, source="whatsapp"):
+    """וואטסאפ/טלגרם — ידיעה קצרה לקבוצות. אותו טקסט, קישור מתויג לכל אחת."""
     return "\n".join([
         f"*{proof(art.get('title',''))}*",
         "",
         "<<< 2-3 שורות: מה הממצא ולמה זה חשוב >>>",
         "",
         sig(art),
-        art.get("link", ""),
+        tagged(art, source),
     ])
 
 
@@ -116,7 +135,8 @@ def main():
         ("אינסטגרם (קרוסלה)", instagram(art)),
         ("פייסבוק", facebook(art)),
         ("X", x_post(art)),
-        ("וואטסאפ / טלגרם", whatsapp(art)),
+        ("וואטסאפ", whatsapp(art, "whatsapp")),
+        ("טלגרם", whatsapp(art, "telegram")),
         ("ריל", reel_caption(art)),
     ]
     md = [f"# קופי הפצה - {proof(art.get('title',''))}", ""]
@@ -124,7 +144,8 @@ def main():
     if is_sensitive(art):
         md.append("\n> תוכן רגיש זוהה - נוספה שורת ההסתייגות \"למצולמים אין קשר לכתבה\".")
     md.append("\n> הסימונים `<<< ... >>>` ממתינים לניסוח של קלוד/דור לפי קול האתר.")
-    md.append("> מוסכמות מקודדות: פתיחה=הצהרת ממצא · תבנית פייפ · סיומת ביו+סטורי · קרדיט פלאש 90 · בלי סימני קריאה.\n")
+    md.append("> מוסכמות מקודדות: פתיחה=הצהרת ממצא · תבנית פייפ · סיומת ביו+סטורי · קרדיט פלאש 90 · בלי סימני קריאה.")
+    md.append("> הקישורים מתויגים ב-UTM לכל פלטפורמה, כדי שהביקורים ייספרו לה ב-Google Analytics. לא להחליף בקישור הנקי.\n")
     for name, body in blocks:
         md += [f"\n## {name}\n", "```", proof(body), "```"]
 
