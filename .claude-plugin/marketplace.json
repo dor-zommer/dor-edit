@@ -17,7 +17,7 @@
     {
       "name": "hamakom-desk",
       "source": "./plugins/hamakom-desk",
-      "description": "ניהול מערכת — סנכרון נושן, ליינאפ, ניוזלטר, אסטרטגיה"
+      "description": "ניהול מערכת: סנכרון נושן, ליינאפ, אסטרטגיה"
     },
     {
       "name": "hamakom-distribute",
