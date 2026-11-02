@@ -27,6 +27,8 @@ CHECKS = [
     ("comma_before_she", re.compile(rf",\s+ש(?=[{HEBREW}])")),
     ("al_menat_hyphen", re.compile(r"על[-־]מנת")),
     ("double_space", re.compile(r"(?<=\S)  +")),
+    # ״אמריקאי״ בכל מקום (דור, 2.11.2026)
+    ("amerikani", re.compile(r"(?<![א-ת])[הובלמש]?אמריקני(?:ת|ים|ות)?(?![א-ת])")),
 ]
 
 BLACKLIST = [

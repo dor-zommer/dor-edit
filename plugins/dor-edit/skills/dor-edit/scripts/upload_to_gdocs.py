@@ -201,7 +201,11 @@ def batch(doc_id: str, token: str, requests: list) -> dict:
     return {"replies": replies}
 
 
-def batch_suggest(doc_id: str, token: str, requests: list) -> dict:
+class RevisionChanged(RuntimeError):
+    """המסמך השתנה מאז הקריאה (בדרך כלל: דור עורך במקביל). האינדקסים כבר לא תקפים."""
+
+
+def batch_suggest(doc_id: str, token: str, requests: list, revision_id: str | None = None) -> dict:
     """batchUpdate במצב SUGGEST — כל insertText/deleteContentRange הופך להצעה אמיתית
     של Docs (accept/reject מובנה, מיוחסת למשתמש המאמת), בלי דריסת טקסט קיים.
 
@@ -211,14 +215,33 @@ def batch_suggest(doc_id: str, token: str, requests: list) -> dict:
 
     הבקשות ממוינות יורד לפי אינדקס, ולכן פיצול לצ'אנקים בטוח: כל צ'אנק נוגע
     באינדקסים נמוכים מקודמו ואינו מוזז על ידיו.
+
+    נעילת גרסה (לקח 2.11.2026): כשמועבר revision_id, כל צ'אנק נשלח עם
+    requiredRevisionId. אם דור ערך את המסמך מאז הקריאה, גוגל דוחה את הכתיבה
+    ב-400 במקום להחיל הצעות על אינדקסים שזזו (התוצאה בלי נעילה: שאריות כמו
+    ״ר״״ ו״שנשאלתלת״, וכותרת שנבלעה בפסקה). בין צ'אנקים משרשרים את הגרסה
+    שגוגל מחזיר אחרי הכתיבה שלנו, כדי שהצ'אנק הבא לא ייחסם על השינוי שלנו עצמנו.
     """
     if not requests:
         return {}
     replies = []
+    rev = revision_id
     for i in range(0, len(requests), BATCH_CHUNK):
-        rep = _batch_raw(doc_id, token, requests[i:i + BATCH_CHUNK],
-                         write_control={"writeMode": "SUGGEST"})
+        wc = {"writeMode": "SUGGEST"}
+        if rev:
+            wc["requiredRevisionId"] = rev
+        try:
+            rep = _batch_raw(doc_id, token, requests[i:i + BATCH_CHUNK], write_control=wc)
+        except urllib.error.HTTPError as e:
+            if rev and e.code == 400:
+                raise RevisionChanged(
+                    "גוגל דחה את הכתיבה (400). אם בהודעה שהודפסה מעל מוזכר revision -"
+                    " המסמך השתנה מאז הקריאה (כנראה דור עורך עכשיו). לא נכתב דבר"
+                    + (" מעבר לצ'אנקים הקודמים" if i else "")
+                    + ". לקרוא את המסמך מחדש, לעגן מהטקסט הנוכחי ולהריץ שוב.") from e
+            raise
         replies.extend(rep.get("replies", []))
+        rev = (rep.get("writeControl") or {}).get("requiredRevisionId") or rev
     return {"replies": replies}
 
 
@@ -929,7 +952,12 @@ def suggest_edits(doc_id: str, account: str, edits_path: Path, tab_id: str | Non
                 reqs.append({"insertText": {"text": new, "location": {"tabId": tid, "index": e}}})
 
     if reqs:
-        batch_suggest(doc_id, token, reqs)
+        try:
+            batch_suggest(doc_id, token, reqs, revision_id=doc.get("revisionId"))
+        except RevisionChanged as e:
+            return {"id": doc_id, "tab_id": tid, "mode": "suggest", "applied": 0,
+                    "requests": len(reqs), "clean": False, "overwrote": False,
+                    "revision_changed": True, "error": str(e), "skipped": skipped}
 
     # אימות חובה — רק הצעות **חדשות** נספרות (הפרש מול הצילום שלפני הכתיבה)
     post_view = get_doc_view(doc_id, token, "SUGGESTIONS_INLINE")
