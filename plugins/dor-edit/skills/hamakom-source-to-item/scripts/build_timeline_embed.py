@@ -14,6 +14,13 @@ events.json: [{"date": "...", "label": "2-4 מילים", "title": "...", "body":
 התחנה האחרונה נבחרת כברירת מחדל.
 """
 import json, argparse, sys
+from html import escape as _esc
+
+
+def esc(v):
+    """HTML-escape לשדה אירוע: <, >, & ומרכאות. שדות האירוע הם טקסט, לא HTML -
+    בלי זה `<` או `&` בגוף האירוע שוברים את ההטמעה או מזריקים תגיות."""
+    return _esc(str(v), quote=True)
 
 def build(events, footer, accent, accent_deep, prefix, hint):
     n = len(events); last = n - 1
@@ -55,10 +62,11 @@ def build(events, footer, accent, accent_deep, prefix, hint):
         for i in range(n))
     nodes = "".join(
         '<label class="{p}-node {p}-n{i}" for="{p}-r{i}"><span class="{p}-d">{d}</span><span class="{p}-dot"></span><span class="{p}-l">{l}</span></label>'.format(
-            p=p, i=i, d=e["date"], l=e["label"]) for i, e in enumerate(events))
+            p=p, i=i, d=esc(e["date"]), l=esc(e["label"])) for i, e in enumerate(events))
     cards = "".join(
         '<div class="{p}-card {p}-c{i}"><div class="{p}-cd">{d}</div><div class="{p}-ct">{t}</div><div class="{p}-cb">{b}</div></div>'.format(
-            p=p, i=i, d=e["date"], t=e["title"], b=e["body"]) for i, e in enumerate(events))
+            p=p, i=i, d=esc(e["date"]), t=esc(e["title"]), b=esc(e["body"]))
+        for i, e in enumerate(events))
     return (
         '<meta charset="utf-8">\n<div class="{p}">\n<style>{s}</style>\n{r}\n'
         '<div class="{p}-hint">{h}</div>\n'
@@ -77,16 +85,19 @@ def main():
     ap.add_argument("--prefix", default="hmtl")
     ap.add_argument("--hint", default="לחצו על תחנה בציר כדי לקרוא מה קרה בה")
     args = ap.parse_args()
-    events = json.load(open(args.events_json, encoding="utf-8"))
+    with open(args.events_json, encoding="utf-8") as f:
+        events = json.load(f)
     if not 2 <= len(events) <= 20:
         sys.exit("between 2 and 20 events please")
     for e in events:
         for k in ("date", "label", "title", "body"):
             if k not in e: sys.exit("missing key %r in event: %r" % (k, e))
         for k in ("date", "label", "title", "body"):
-            if '"' in e[k]: sys.exit('ASCII double quote in %r — use ״ (gershayim) or “ ” instead' % e[k][:40])
+            if not isinstance(e[k], str): sys.exit("field %r must be a string in event: %r" % (k, e))
+            if '"' in e[k]: sys.exit('ASCII double quote in %r - use ״ (gershayim) or “ ” instead' % e[k][:40])
     html = build(events, args.footer, args.accent, args.accent_deep, args.prefix, args.hint)
-    open(args.out, "w", encoding="utf-8").write(html)
+    with open(args.out, "w", encoding="utf-8") as f:
+        f.write(html)
     print("wrote", args.out, len(html.encode("utf-8")), "bytes; paste into a WordPress Custom HTML block")
 
 if __name__ == "__main__":

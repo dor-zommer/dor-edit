@@ -8,12 +8,14 @@ Track changes בקובץ הופכים ל"הצעות עריכה" (suggestions) ב
 שימוש:
     python3 upload_to_gdocs.py <path.docx> [--account dor.zommer@shakuf.co.il] \
         [--name "שם המסמך"] [--folder <folder_id>]
-    python3 upload_to_gdocs.py <path.docx> --update <file_id>
+    python3 upload_to_gdocs.py <path.docx> --update <file_id> --direct   # דריסה מלאה! מסורב בלי --direct
     # לשונית דוח עורך בתוך מסמך קיים (קיימת כבר? מוסיף בסופה, לא דורס):
     python3 upload_to_gdocs.py --report-tab report.txt --doc <doc_id>
-    # אכיפת פונט Alef 14 על מסמך קיים (אפשר להגביל ללשונית אחת):
-    python3 upload_to_gdocs.py --enforce-font --doc <doc_id> [--only-tab <tab_id>]
-    # החלת edits.json כהצעות Docs אמיתיות (writeMode SUGGEST):
+    # אכיפת פונט Alef 14 על מסמך קיים, כהצעות עיצוב (אפשר להגביל ללשונית אחת;
+    # --direct = כתיבה ישירה עם אזהרה):
+    python3 upload_to_gdocs.py --enforce-font --doc <doc_id> [--only-tab <tab_id>] [--direct]
+    # החלת edits.json כהצעות Docs אמיתיות (writeMode SUGGEST), כולל קישורים
+    # (שדה link). ledger נכתב ליד edits.json; exit 1 אם לא clean:
     python3 upload_to_gdocs.py --suggest edits.json --doc <doc_id> [--tab <tab_id>]
     # ולידציה מקומית של עוגנים מול קובץ טיוטה — בלי לגעת ב-Google Docs:
     python3 upload_to_gdocs.py --validate edits.json --draft draft.txt
@@ -38,9 +40,11 @@ Track changes בקובץ הופכים ל"הצעות עריכה" (suggestions) ב
   **Developer Preview** ודורש רישום ל-Google Workspace Developer Preview Program.
 - פרויקט שאינו רשום: הבקשה מחזירה **200 בלי שגיאה — והשינוי נכתב כעריכה ישירה**.
   כלומר בקשה שנראית "הצעה" מבצעת בפועל דריסה שקופה של טקסט קיים.
-- **לעולם אל תסמוך על SUGGEST בלי אימות**: suggest_edits מצלם את מזהי ההצעות
-  לפני הכתיבה ובודק שאחריה נוספו מזהים **חדשים**. applied>0 בלי אף הצעה
-  חדשה = overwrote.
+- **לעולם אל תסמוך על SUGGEST בלי אימות**: suggest_edits מאמת **לפי תוכן**
+  (19.11.2026): PREVIEW_WITHOUT_SUGGESTIONS חייב להישאר זהה (אחרת overwrote),
+  ו-PREVIEW_SUGGESTIONS_ACCEPTED חייב להכיל כל טקסט חדש בדיוק פעם אחת לכל
+  עריכה (פעמיים = duplicate). מזהי ההצעות נספרים כמידע משני בלבד - עוגן
+  שנוגע בהצעה קיימת מתמזג אליה בלי מזהה חדש, וזה לא דריסה.
 - `addDocumentTab` ממילא **אינו נתמך** ב-SUGGEST mode (מתועד) — לשונית הדוח נוצרת
   תמיד ב-EDIT, וזה תקין: יצירת לשונית חדשה לא דורסת דבר.
 
@@ -48,7 +52,8 @@ Track changes בקובץ הופכים ל"הצעות עריכה" (suggestions) ב
 העורך (report.txt) בלבד — לעולם לא לגוף הכתבה. רשומת comment ב-edits.json
 מדולגת עם אזהרה.
 """
-import json, os, re, ssl, sys, time, argparse, uuid, urllib.error, urllib.request, urllib.parse
+import hashlib, http.client, json, os, re, ssl, sys, time, argparse, uuid
+import urllib.error, urllib.request, urllib.parse
 from datetime import datetime
 from pathlib import Path
 
@@ -58,31 +63,57 @@ try:
 except ImportError:
     _CTX = ssl.create_default_context()
 
+HTTP_TIMEOUT = 60  # שניות; בלי timeout חיבור תקוע נתלה לנצח
 
-def _open(req, retries: int = 3):
-    """עטיפת urlopen: מדפיס את גוף שגיאת ה-HTTP מגוגל, ו-retry עם backoff על 429/5xx."""
+
+class WriteOutcomeUnknown(Exception):
+    """בקשת כתיבה (POST/PATCH) נשלחה, אבל התשובה לא הגיעה במלואה.
+
+    ייתכן שהשרת **ביצע** אותה. אסור לשלוח שוב בעיוורון - צריך לקרוא את
+    המסמך מחדש ולבדוק לפי תוכן אם השינוי נחת.
+    """
+
+
+def _open(req, retries: int = 3, idempotent: bool | None = None) -> bytes:
+    """urlopen + read בתוך אותו try, עם timeout. מחזיר את גוף התשובה כ-bytes.
+
+    מדיניות retry:
+    - בקשה אידמפוטנטית (GET, או רענון טוקן OAuth שמסומן idempotent=True):
+      retry עם backoff על 429/5xx, שגיאות רשת ו-IncompleteRead, גם בשלב הקריאה.
+    - כל POST/PATCH אחר (batchUpdate, העלאה ל-Drive): **אפס retry**. שליחה
+      חוזרת אחרי חיבור שנפל יכולה לשכפל הצעות או קבצים. שגיאת רשת או תשובה
+      חלקית אחרי השליחה מורמות כ-WriteOutcomeUnknown; שגיאת HTTP (השרת
+      ענה ודחה) מורמת כ-HTTPError כרגיל.
+    """
+    if idempotent is None:
+        idempotent = req.get_method() in ("GET", "HEAD")
+    attempts = retries if idempotent else 1
     last_err = None
-    for attempt in range(retries):
+    for attempt in range(attempts):
         try:
-            return urllib.request.urlopen(req, context=_CTX)
+            with urllib.request.urlopen(req, context=_CTX, timeout=HTTP_TIMEOUT) as r:
+                return r.read()
         except urllib.error.HTTPError as e:
             body = ""
             try:
                 body = e.read().decode("utf-8", "ignore")
             except Exception:
                 pass
-            retryable = e.code == 429 or e.code >= 500
+            retryable = idempotent and (e.code == 429 or e.code >= 500)
             print(f"HTTP {e.code} מגוגל"
-                  + (f" (ניסיון {attempt + 1}/{retries})" if retryable else "")
+                  + (f" (ניסיון {attempt + 1}/{attempts})" if retryable else "")
                   + (f": {body[:2000]}" if body else ""), file=sys.stderr)
-            if retryable and attempt < retries - 1:
+            if retryable and attempt < attempts - 1:
                 time.sleep(2 ** attempt)
                 last_err = e
                 continue
             raise
-        except urllib.error.URLError as e:
-            print(f"שגיאת רשת (ניסיון {attempt + 1}/{retries}): {e.reason}", file=sys.stderr)
-            if attempt < retries - 1:
+        except (urllib.error.URLError, http.client.HTTPException, OSError) as e:
+            reason = getattr(e, "reason", None) or repr(e)
+            print(f"שגיאת רשת (ניסיון {attempt + 1}/{attempts}): {reason}", file=sys.stderr)
+            if not idempotent:
+                raise WriteOutcomeUnknown(str(reason)) from e
+            if attempt < attempts - 1:
                 time.sleep(2 ** attempt)
                 last_err = e
                 continue
@@ -127,8 +158,8 @@ def access_token(account: str) -> str:
         "grant_type": "refresh_token",
     }).encode()
     req = urllib.request.Request("https://oauth2.googleapis.com/token", data=data)
-    with _open(req) as r:
-        return json.load(r)["access_token"]
+    # רענון טוקן הוא POST אבל אידמפוטנטי - מותר retry
+    return json.loads(_open(req, idempotent=True))["access_token"]
 
 
 def upload(path: Path, account: str, name: str, folder: str | None) -> dict:
@@ -151,8 +182,8 @@ def upload(path: Path, account: str, name: str, folder: str | None) -> dict:
             "Content-Type": f"multipart/related; boundary={boundary}",
         },
     )
-    with _open(req) as r:
-        return json.load(r)
+    # POST יצירה: בלי retry (שליחה חוזרת = קובץ כפול ב-Drive)
+    return json.loads(_open(req))
 
 
 def update(path: Path, account: str, file_id: str) -> dict:
@@ -163,8 +194,7 @@ def update(path: Path, account: str, file_id: str) -> dict:
         headers={"Authorization": f"Bearer {access_token(account)}", "Content-Type": DOCX_MIME},
         method="PATCH",
     )
-    with _open(req) as r:
-        return json.load(r)
+    return json.loads(_open(req))
 
 
 # ---------------------------------------------------------------- Docs API
@@ -175,8 +205,7 @@ def _docs(url: str, token: str, method: str = "GET", body: dict | None = None) -
         data=json.dumps(body, ensure_ascii=False).encode() if body else None,
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
     )
-    with _open(req) as r:
-        return json.load(r)
+    return json.loads(_open(req))
 
 
 def get_doc(doc_id: str, token: str) -> dict:
@@ -201,25 +230,32 @@ def batch(doc_id: str, token: str, requests: list) -> dict:
     return {"replies": replies}
 
 
-def batch_suggest(doc_id: str, token: str, requests: list) -> dict:
-    """batchUpdate במצב SUGGEST — כל insertText/deleteContentRange הופך להצעה אמיתית
-    של Docs (accept/reject מובנה, מיוחסת למשתמש המאמת), בלי דריסת טקסט קיים.
+SUGGEST_MAX_REQUESTS = 1000  # POST אחד לכל הרצה; מעבר לזה - לפצל את edits.json
+
+
+def batch_suggest(doc_id: str, token: str, requests: list,
+                  required_revision_id: str | None = None) -> dict:
+    """batchUpdate במצב SUGGEST - כל insertText/deleteContentRange/updateTextStyle
+    הופך להצעה של Docs (accept/reject מובנה), בלי דריסת טקסט קיים.
 
     דורש שהטוקן יהיה מהפרויקט הרשום ב-Google Workspace Developer Preview
-    (dor-gmail-mcp / 719854974771 — אושר 17.07.2026). על פרויקט לא-רשום SUGGEST
-    נבלע בשקט והופך לדריסה — לכן suggest_edits תמיד מאמת אחרי הכתיבה.
+    (dor-gmail-mcp / 719854974771 - אושר 17.07.2026). על פרויקט לא-רשום SUGGEST
+    נבלע בשקט והופך לדריסה - לכן כל קורא מאמת אחרי הכתיבה.
 
-    הבקשות ממוינות יורד לפי אינדקס, ולכן פיצול לצ'אנקים בטוח: כל צ'אנק נוגע
-    באינדקסים נמוכים מקודמו ואינו מוזז על ידיו.
+    **POST אחד בלבד, בלי פיצול לצ'אנקים ובלי retry**: אחרי הצ'אנק הראשון
+    ה-revision משתנה, ו-requiredRevisionId היה דוחה את השני; ושליחה חוזרת אחרי
+    חיבור שנפל עלולה לשכפל הצעות. requiredRevisionId (מהקריאה שממנה נגזרו
+    האינדקסים) מבטיח שהבקשה לא תוחל על מסמך שהשתנה בינתיים.
     """
     if not requests:
         return {}
-    replies = []
-    for i in range(0, len(requests), BATCH_CHUNK):
-        rep = _batch_raw(doc_id, token, requests[i:i + BATCH_CHUNK],
-                         write_control={"writeMode": "SUGGEST"})
-        replies.extend(rep.get("replies", []))
-    return {"replies": replies}
+    if len(requests) > SUGGEST_MAX_REQUESTS:
+        sys.exit(f"{len(requests)} בקשות - מעל {SUGGEST_MAX_REQUESTS} ב-POST אחד. "
+                 "פצל את edits.json לשני קבצים והרץ כל אחד בנפרד.")
+    wc = {"writeMode": "SUGGEST"}
+    if required_revision_id:
+        wc["requiredRevisionId"] = required_revision_id
+    return _batch_raw(doc_id, token, requests, write_control=wc)
 
 
 def get_doc_view(doc_id: str, token: str, view: str) -> dict:
@@ -260,12 +296,14 @@ def _runs(tab: dict):
     yield from walk(tab["documentTab"]["body"]["content"])
 
 
-def font_requests(doc: dict, only_tab: str | None = None) -> list:
+def font_requests(doc: dict, only_tab: str | None = None, min_index: int = 0) -> list:
     """Alef על כל הטקסט; גודל לפי רמת הכותרת — והדגשה קיימת נשמרת.
 
     runs סמוכים עם אותו יעד עיצוב (bold + גודל) מאוחדים לבקשה אחת —
     מקטין דרמטית את מספר הבקשות על מאמר ארוך.
     `only_tab` מגביל את האכיפה ללשונית אחת (ראה הערת חוק-הברזל ב-enforce_font).
+    `min_index` מגביל לטקסט שמתחיל מהאינדקס הזה (למשל רק מה שנוסף עכשיו בסוף
+    לשונית הדוח - בלי לגעת בתוכן שכבר היה בה).
     """
     reqs = []
     for tab in doc.get("tabs", []):
@@ -275,6 +313,7 @@ def font_requests(doc: dict, only_tab: str | None = None) -> list:
         # איחוד runs סמוכים: [pt, start, end, bold]
         merged = []
         for style, start, end, bold in _runs(tab):
+            start = max(start, min_index)
             if end <= start:
                 continue
             pt = HEADING_PT.get(style, BODY_PT if style == "NORMAL_TEXT" else None)
@@ -300,7 +339,8 @@ def font_requests(doc: dict, only_tab: str | None = None) -> list:
     return reqs
 
 
-def enforce_font(doc_id: str, account: str, only_tab: str | None = None) -> dict:
+def enforce_font(doc_id: str, account: str, only_tab: str | None = None,
+                 direct: bool = False) -> dict:
     """אכיפת טיפוגרפיית הסקיל (Alef; גוף 14) על מסמך קיים.
 
     חוק הברזל והכרעתו כאן (17.07.2026): **עיצוב אינו דריסת תוכן** — הפעולה הזו
@@ -312,11 +352,53 @@ def enforce_font(doc_id: str, account: str, only_tab: str | None = None) -> dict
     בכל זאת — זו כן דריסה של *בחירת פונט/גודל* מכוונת. לכן: מריצים על מסמך
     מסירה טרי, ולא על מסמך שדור כבר עיצב. אם צריך לעצב רק את לשונית הדוח
     בלי לגעת בלשונית הראשית שדור ערך — `--only-tab <tab_id>`.
+
+    עדכון (חוק הברזל - הרחבה 22.7.2026: "הכל בהצעות" חל על כל מסמך שנמסר):
+    ברירת המחדל היא עכשיו הצעות עיצוב (SUGGEST) עם אימות; כתיבה ישירה רק
+    עם --direct מפורש, ועם אזהרה.
     """
     token = access_token(account)
-    reqs = font_requests(get_doc(doc_id, token), only_tab)
-    batch(doc_id, token, reqs)
-    return {"id": doc_id, "font_requests": len(reqs), "only_tab": only_tab}
+    doc = get_doc(doc_id, token)
+    reqs = font_requests(doc, only_tab)
+    info = apply_style_requests(doc_id, token, reqs, doc.get("revisionId"), direct,
+                                "enforce-font")
+    return {"id": doc_id, "font_requests": len(reqs), "only_tab": only_tab, **info}
+
+
+def apply_style_requests(doc_id: str, token: str, reqs: list, revision: str | None,
+                         direct: bool, what: str) -> dict:
+    """מחיל בקשות עיצוב (updateTextStyle / updateParagraphStyle).
+
+    ברירת מחדל: כהצעות (SUGGEST) עם אימות - נדרשים מזהי suggestedTextStyleChanges /
+    suggestedParagraphStyleChanges **חדשים** אחרי הכתיבה. אם אין - ייתכן ש-SUGGEST
+    נבלע וההחלה הייתה ישירה: overwrote=true ואזהרה.
+    לא נבדק מול ה-API בפועל (19.11.2026): ייתכן ש-SUGGEST אינו תומך בשינויי
+    סגנון פסקה. במקרה כזה הבקשה תיכשל או תסומן overwrote - ואז אפשר לבחור
+    במודע ב---direct (כתיבה ישירה, עם אזהרה).
+    """
+    if not reqs:
+        return {"mode": "direct" if direct else "suggest", "requests": 0}
+    if direct:
+        print(f"אזהרה: {what} עם --direct - עיצוב נכתב ישירות למסמך, לא כהצעה. "
+              "דור לא יוכל לדחות אותו דרך accept/reject.", file=sys.stderr)
+        batch(doc_id, token, reqs)
+        return {"mode": "direct", "requests": len(reqs)}
+    pre = _all_ids(_suggestion_ids(get_doc_view(doc_id, token, "SUGGESTIONS_INLINE")))
+    try:
+        batch_suggest(doc_id, token, reqs, revision)
+    except WriteOutcomeUnknown as e:
+        print(f"החיבור נפל אחרי השליחה ({e}). לא שולח שוב - בודק.", file=sys.stderr)
+    except urllib.error.HTTPError as e:
+        sys.exit(f"{what} נדחה במצב SUGGEST (HTTP {e.code}; פירוט ב-stderr). לא הוחל דבר. "
+                 "ייתכן שה-API לא תומך בשינוי הזה כהצעה. כתיבה ישירה מודעת: --direct.")
+    post = _suggestion_ids(get_doc_view(doc_id, token, "SUGGESTIONS_INLINE"))
+    new_style = (post["text_style"] | post["para_style"]) - pre
+    overwrote = not new_style
+    if overwrote:
+        print(f"אזהרה: {what} במצב SUGGEST לא יצר אף הצעת עיצוב חדשה. ייתכן שהעיצוב "
+              "הוחל ישירות (SUGGEST נבלע). בדוק את המסמך ידנית.", file=sys.stderr)
+    return {"mode": "suggest", "requests": len(reqs),
+            "style_suggestions": len(new_style), "overwrote": overwrote}
 
 
 def _tab_end_index(tab: dict) -> int:
@@ -340,14 +422,15 @@ def _para_texts(tab: dict):
 
 
 def mark_headings(doc_id: str, account: str, headings_path: Path,
-                  tab_id: str | None = None) -> dict:
+                  tab_id: str | None = None, direct: bool = False) -> dict:
     """מסמן כותרות בכתבה עצמה בסגנון אמיתי: ראשית=H1, ביניים=H2.
 
     קלט: JSON (רשימת מחרוזות או [{"text":..,"level":2}]) או טקסט שורה-לכותרת
     (אפשר עם קידומת `#`/`##` שקובעת רמה; ברירת מחדל H2 = כותרת ביניים).
 
     זו פעולת **עיצוב**, לא תוכן: היא לא מוחקת ולא משנה אף מילה — רק מחילה
-    namedStyleType על פסקה שכבר קיימת. לכן מותרת תחת חוק הברזל.
+    namedStyleType על פסקה שכבר קיימת. בכל זאת - "הכל בהצעות": ברירת המחדל
+    היא SUGGEST עם אימות (apply_style_requests); כתיבה ישירה רק עם --direct.
     """
     token = access_token(account)
     doc = get_doc(doc_id, token)
@@ -405,10 +488,10 @@ def mark_headings(doc_id: str, account: str, headings_path: Path,
             "fields": "weightedFontFamily,fontSize"}})
         matched.append({"text": h["text"][:60], "level": h["level"]})
 
-    if reqs:
-        batch(doc_id, token, reqs)
+    info = apply_style_requests(doc_id, token, reqs, doc.get("revisionId"), direct,
+                                "mark-headings")
 
-    return {"id": doc_id, "tab_id": tid, "marked": len(matched),
+    return {"id": doc_id, "tab_id": tid, "marked": len(matched), **info,
             "headings": matched, "not_found": missed,
             "url": f"https://docs.google.com/document/d/{doc_id}/edit?tab={tid}"}
 
@@ -661,7 +744,9 @@ def add_report_tab(doc_id: str, account: str, report_path: Path) -> dict:
 
     # אכיפת הפונט אחרי שהפסקאות קיבלו את הסגנון הנקוב שלהן —
     # רק על לשונית הדוח. הלשונית הראשית היא של דור; לא נוגעים בעיצוב שלה.
-    batch(doc_id, token, font_requests(get_doc(doc_id, token), only_tab=tid))
+    # בלשונית קיימת: רק על הטווח שנוסף עכשיו (מ-at), לא על מה שכבר היה בה.
+    batch(doc_id, token, font_requests(get_doc(doc_id, token), only_tab=tid,
+                                       min_index=at if appending else 0))
     return {"id": doc_id, "tab_id": tid, "tab_title": REPORT_TAB_TITLE,
             "mode": "appended" if appending else "created",
             "url": f"https://docs.google.com/document/d/{doc_id}/edit?tab={tid}"}
@@ -730,21 +815,70 @@ def _tab_plaintext(tab: dict):
     return "".join(plain), mapping
 
 
+_DELETE_TYPES = {"delete", "deletion", "remove"}
+_REPLACE_TYPES = {"replace", "replacement"}
+_INSERT_TYPES = {"insert", "insertion", "add"}
+_LINK_TYPES = {"link"}
+
+
 def _norm_edit(rec: dict) -> dict:
-    """מנרמל רשומת edits.json לפורמט אחיד, עם כינויים גמישים לשמות שדות."""
-    t = (rec.get("type") or "").lower()
+    """מנרמל רשומת edits.json לפורמט אחיד, עם כינויים גמישים לשמות שדות.
+
+    סיווג (type מפורש גובר תמיד):
+    - deletion: type=deletion/delete, או originalText + newText **שקיים ושווה ""**.
+      (`"newText" in rec` ולא `rec.get(...) or ...` - שרשרת or מסתירה מחרוזת ריקה.)
+    - replacement: עוגן + newText לא ריק.
+    - insertion: עוגן מסוג `anchor` (ולא originalText) + newText; או type מפורש.
+    - link: originalText + link בלי newText - קישור על טקסט קיים, בלי שינוי טקסט.
+    - invalid: originalText בלי newText ובלי link - **לעולם לא נמחק** רשומה פגומה.
+    שדה `link` (מחרוזת URL או {"url": ...}) אופציונלי: על newText שנוסף הוא מוחל
+    כהצעת עיצוב (updateTextStyle במצב SUGGEST) מיד אחרי ההכנסה.
+    """
+    t = (rec.get("type") or "").lower().strip()
     find = rec.get("originalText") or rec.get("find") or rec.get("anchor") or ""
-    new = rec.get("newText") or rec.get("text") or rec.get("insert") or ""
+    new_key = next((k for k in ("newText", "text", "insert")
+                    if k in rec and rec[k] is not None), None)
+    new = rec[new_key] if new_key and isinstance(rec[new_key], str) else ""
+    link = rec.get("link") or ""
+    if isinstance(link, dict):
+        link = link.get("url") or ""
+    link = str(link).strip()
     comment = rec.get("comment") or rec.get("note") or ""
     occ = int(rec.get("occurrence", 1))
-    if not t:
-        if find and new:
-            t = "replacement"
-        elif comment and not new:
+    anchor_only = bool(rec.get("anchor")) and not (rec.get("originalText") or rec.get("find"))
+
+    if t in _DELETE_TYPES:
+        t = "deletion"
+    elif t in _REPLACE_TYPES:
+        t = "replacement"
+        if new_key is None and link:
+            t = "link"              # replacement בלי newText אבל עם link = קישור על טקסט קיים
+        elif new_key is None:
+            t = "invalid"           # replacement בלי newText - לא מנחשים מחיקה
+        elif new == "":
+            t = "deletion"          # newText="" מפורש = מחיקה
+    elif t in _INSERT_TYPES:
+        t = "insertion"
+    elif t in _LINK_TYPES:
+        t = "link"
+    elif t == "comment":
+        pass
+    elif t:
+        t = "unknown:" + t
+    else:
+        if comment and new_key is None and not link:
             t = "comment"
+        elif find and new:
+            t = "insertion" if anchor_only else "replacement"
+        elif find and new_key is not None and new == "":
+            t = "invalid" if link else "deletion"
+        elif find and new_key is None and link:
+            t = "link"
+        elif find and new_key is None:
+            t = "invalid"
         else:
             t = "insertion"
-    return {"type": t, "find": find, "new": new, "occurrence": occ,
+    return {"type": t, "find": find, "new": new, "link": link, "occurrence": occ,
             "explicit_occurrence": "occurrence" in rec, "comment": comment}
 
 
@@ -779,6 +913,46 @@ def _normalize_with_map(s: str) -> tuple:
     return "".join(out), idx_map
 
 
+_QUOTE_EQ = {
+    "“": '"', "”": '"', "„": '"', "״": '"',
+    "‘": "'", "’": "'", "׳": "'",
+}
+
+
+def _qeq(ch: str) -> str:
+    return _QUOTE_EQ.get(ch, ch)
+
+
+def _minimize_replacement(old: str, new: str):
+    """מצמצם החלפה לטווח המילים שבאמת השתנה (הנחיית דור 17.11.2026).
+
+    מרכאות וגרשיים מכל סוג נחשבים זהים: שינוי שכולו מרכאות לא נשלח (None),
+    ומרכאות בקצוות של משפט מוחלף לא מגדילות את ההצעה למשפט שלם - הטקסט במסמך
+    שומר את המרכאות שלו. החיתוך נעשה בגבולות מילה, כדי שתיקון הקלדה יציע את
+    המילה כולה ולא חצי מילה.
+    מחזיר (start, end, new_min) יחסית ל-old, או None אם אין שינוי ענייני.
+    """
+    if "".join(map(_qeq, old)) == "".join(map(_qeq, new)):
+        return None
+    def bnd(x, i):  # גבול מילה: לא באמצע רצף אותיות/ספרות
+        return i <= 0 or i >= len(x) or not (x[i - 1].isalnum() and x[i].isalnum())
+
+    p, lim = 0, min(len(old), len(new))
+    while p < lim and _qeq(old[p]) == _qeq(new[p]):
+        p += 1
+    while p > 0 and not (bnd(old, p) and bnd(new, p)):
+        p -= 1
+    s, lim2 = 0, min(len(old), len(new)) - p
+    while s < lim2 and _qeq(old[-1 - s]) == _qeq(new[-1 - s]):
+        s += 1
+    while s > 0 and not (bnd(old, len(old) - s) and bnd(new, len(new) - s)):
+        s -= 1
+    o_mid, n_mid = old[p:len(old) - s], new[p:len(new) - s]
+    if "".join(map(_qeq, o_mid)) == "".join(map(_qeq, n_mid)):
+        return None
+    return p, len(old) - s, n_mid
+
+
 def _find_occurrences(plain: str, needle: str) -> list:
     out, i = [], plain.find(needle)
     while i != -1:
@@ -791,27 +965,41 @@ def _resolve_anchors(raw_edits: list, plain: str) -> tuple:
     """רזולוציית עוגנים משותפת (suggest + validate) על אינדקסים פייתוניים ב-plain.
 
     מחזיר (resolved, skipped):
-      resolved: [{"pstart", "pend", "new", "anchor", "exact"}]  (pstart==pend = הוספה)
-      skipped:  [{"reason", ...}] — כולל not_found / ambiguous / no_anchor /
-                overlap / comment_type_removed.
+      resolved: [{"pstart", "pend", "new", "link", "kind", "idx", "anchor", "exact"}]
+                (pstart==pend = הוספה; idx = המיקום ברשימה המקורית)
+      skipped:  [{"reason", ...}] - כולל not_found / ambiguous / no_anchor /
+                overlap / comment_type_removed / no_new_text / empty_insertion /
+                bad_link / unknown_type.
 
     כללים:
-    - התאמה מדויקת קודמת; אם אין — התאמה מנורמלת (גרשיים/מקפים/NBSP/רווחים).
+    - התאמה מדויקת קודמת; אם אין - התאמה מנורמלת (גרשיים/מקפים/NBSP/רווחים).
     - יותר ממופע אחד בלי occurrence מפורש = ambiguous (לא בוחרים בשקט).
     - insertion בלי עוגן = no_anchor (לא דוחפים לראש המסמך).
-    - type=comment הוסר (10.08.2026): הערות עורך שייכות ל-report.txt — מדולג עם אזהרה.
+    - type=comment הוסר (10.08.2026): הערות עורך שייכות ל-report.txt - מדולג עם אזהרה.
     - עריכות חופפות: המאוחרת ברשימה נדחית עם reason=overlap.
     """
     norm_plain, norm_map = _normalize_with_map(plain)
     resolved, skipped = [], []
-    for rec in raw_edits:
+    for idx, rec in enumerate(raw_edits):
         e = _norm_edit(rec)
         if e["type"] == "comment":
-            print("אזהרה: type=comment הוסר מהסקיל — הערות עורך שייכות לדוח העורך "
+            print("אזהרה: type=comment הוסר מהסקיל - הערות עורך שייכות לדוח העורך "
                   f"(report.txt) בלבד. ההערה דולגה: {e['comment'][:60]}", file=sys.stderr)
             skipped.append({"reason": "comment_type_removed", "comment": e["comment"][:60]})
             continue
-        find, new = e["find"], e["new"]
+        find, new, link, kind = e["find"], e["new"], e["link"], e["type"]
+        if kind.startswith("unknown:"):
+            skipped.append({"reason": "unknown_type", "type": kind[8:], "text": find[:60]})
+            continue
+        if kind == "invalid":
+            skipped.append({"reason": "no_new_text", "text": find[:60]})
+            continue
+        if kind == "insertion" and not new:
+            skipped.append({"reason": "empty_insertion", "text": find[:60]})
+            continue
+        if link and not re.match(r"^https?://\S+$", link):
+            skipped.append({"reason": "bad_link", "link": link[:80], "text": find[:60]})
+            continue
         if not find:
             skipped.append({"reason": "no_anchor", "new": new[:40]})
             continue
@@ -834,18 +1022,34 @@ def _resolve_anchors(raw_edits: list, plain: str) -> tuple:
                             "text": find[:60]})
             continue
         occ = e["occurrence"]
-        if occ > len(matches):
+        if occ < 1 or occ > len(matches):
             skipped.append({"reason": f"occurrence {occ}>{len(matches)}", "text": find[:60]})
             continue
         s0, e0 = matches[occ - 1]
-        if e["type"] == "insertion":
-            resolved.append({"pstart": e0, "pend": e0, "new": new,
-                             "anchor": find[:60], "exact": exact})
+        base = {"new": new, "link": link, "kind": kind, "idx": idx,
+                "anchor": find[:60], "exact": exact}
+        if kind == "insertion":
+            resolved.append({"pstart": e0, "pend": e0, **base})
         else:
-            resolved.append({"pstart": s0, "pend": e0, "new": new,
-                             "anchor": find[:60], "exact": exact})
+            if kind == "deletion":
+                base["new"] = ""
+            elif kind == "replacement" and not link:
+                # הנחיית דור 17.11.2026: הצעה ענינית או כירורגית בלבד. מצמצמים
+                # לטווח שבאמת השתנה, ומדלגים על הצעה שכל ההבדל בה הוא מרכאות/גרשיים.
+                m = _minimize_replacement(plain[s0:e0], new)
+                if m is None:
+                    skipped.append({"reason": "quotes_only", "text": find[:60]})
+                    continue
+                ds, de, new_min = m
+                s0, e0 = s0 + ds, s0 + de
+                base["new"] = new_min
+                if s0 == e0:
+                    base["kind"] = "insertion"
+                elif not new_min:
+                    base["kind"] = "deletion"
+            resolved.append({"pstart": s0, "pend": e0, **base})
 
-    # זיהוי חפיפות: העריכה המאוחרת ברשימה שחופפת טווח שכבר התקבל — נדחית.
+    # זיהוי חפיפות: העריכה המאוחרת ברשימה שחופפת טווח שכבר התקבל - נדחית.
     accepted_ranges, final = [], []
     for ed in resolved:
         s, ee = ed["pstart"], ed["pend"]
@@ -860,17 +1064,73 @@ def _resolve_anchors(raw_edits: list, plain: str) -> tuple:
     return final, skipped
 
 
-def _suggestion_ids(node) -> tuple:
-    """אוסף מזהי suggestedInsertionIds / suggestedDeletionIds מכל עומק המבנה."""
-    ins, dele = set(), set()
+def _link_req(tid: str, start: int, end: int, url: str) -> dict:
+    return {"updateTextStyle": {
+        "range": {"tabId": tid, "startIndex": start, "endIndex": end},
+        "textStyle": {"link": {"url": url}}, "fields": "link"}}
+
+
+def build_suggest_requests(resolved: list, plain: str, mapping: list, tid: str) -> list:
+    """בונה את רשימת הבקשות ל-batchUpdate מתוך resolved.
+
+    סדר: יורד לפי (pstart, pend, idx). הכנסה מזיזה אינדקסים >= נקודת ההכנסה,
+    ולכן מעבדים גבוה->נמוך. שובר-שוויון: כששתי עריכות מתחילות באותו מקום,
+    הארוכה (החלפה) לפני ההוספה, ושתי הוספות באותה נקודה מעובדות מהמאוחרת
+    ברשימה למוקדמת - כך שבמסמך הן יוצאות בסדר הרשימה. (מיון יציב עם
+    key=pstart בלבד היה הופך את סדרן.)
+
+    קישור (`link`) מוחל ב-updateTextStyle **מיד אחרי ה-insertText שלו**, על
+    הטווח [e, e+len(new)) - הבקשות רצות לפי הסדר, ולכן העיצוב נצמד לטקסט לפני
+    שהכנסות נמוכות יותר מזיזות אותו.
+    """
+    reqs = []
+    order = sorted(resolved, key=lambda x: (x["pstart"], x["pend"], x.get("idx", 0)),
+                   reverse=True)
+    for ed in order:
+        ps, pe, new, link = ed["pstart"], ed["pend"], ed["new"], ed.get("link")
+        kind = ed.get("kind", "replacement")
+        if ps < pe:  # החלפה / מחיקה / קישור על טקסט קיים
+            s = mapping[ps]
+            e = mapping[pe - 1] + _u16len(plain[pe - 1])
+            if kind == "link":
+                if link:
+                    reqs.append(_link_req(tid, s, e, link))
+                continue
+            if new:
+                reqs.append({"insertText": {"text": new, "location": {"tabId": tid, "index": e}}})
+                if link:
+                    reqs.append(_link_req(tid, e, e + _u16(new), link))
+            reqs.append({"deleteContentRange": {
+                "range": {"tabId": tid, "startIndex": s, "endIndex": e}}})
+        else:  # הוספה טהורה אחרי העוגן
+            e = mapping[ps - 1] + _u16len(plain[ps - 1]) if ps > 0 else 1
+            if new:
+                reqs.append({"insertText": {"text": new, "location": {"tabId": tid, "index": e}}})
+                if link:
+                    reqs.append(_link_req(tid, e, e + _u16(new), link))
+    return reqs
+
+
+def _suggestion_ids(node) -> dict:
+    """אוסף מזהי הצעות מכל עומק המבנה.
+
+    insertions / deletions: ערכי suggestedInsertionIds / suggestedDeletionIds (רשימות).
+    text_style / para_style: **המפתחות** של suggestedTextStyleChanges /
+    suggestedParagraphStyleChanges (מפות שממופתחות לפי מזהה הצעה).
+    """
+    out = {"insertions": set(), "deletions": set(), "text_style": set(), "para_style": set()}
 
     def walk(o):
         if isinstance(o, dict):
             for k, v in o.items():
                 if k == "suggestedInsertionIds" and isinstance(v, list):
-                    ins.update(v)
+                    out["insertions"].update(v)
                 elif k == "suggestedDeletionIds" and isinstance(v, list):
-                    dele.update(v)
+                    out["deletions"].update(v)
+                elif k == "suggestedTextStyleChanges" and isinstance(v, dict):
+                    out["text_style"].update(v.keys())
+                elif k == "suggestedParagraphStyleChanges" and isinstance(v, dict):
+                    out["para_style"].update(v.keys())
                 else:
                     walk(v)
         elif isinstance(o, list):
@@ -878,78 +1138,310 @@ def _suggestion_ids(node) -> tuple:
                 walk(i)
 
     walk(node)
-    return ins, dele
+    return out
+
+
+def _all_ids(ids: dict) -> set:
+    return set().union(*ids.values())
+
+
+# ------------------------------------------- אימות לפי תוכן (לא לפי מזהים)
+# מזהי הצעות לבדם מטעים: עוגן שנוגע בהצעה קיימת מתמזג אליה ולא יוצר מזהה
+# חדש (false "overwrote"), ו-SUGGEST שנבלע לדריסה לא משאיר מזהים בכלל.
+# לכן ההכרעה נעשית לפי תוכן בשתי תצוגות:
+#   PREVIEW_WITHOUT_SUGGESTIONS - הטקסט המאושר. חייב להישאר זהה: מקור שנעלם
+#     או טקסט חדש שהופיע בו = כתיבה ישירה = overwrote.
+#   PREVIEW_SUGGESTIONS_ACCEPTED - הטקסט אם דור יקבל הכל. הטקסט החדש חייב
+#     להופיע בו בדיוק פעם אחת לכל עריכה; פעמיים = הצעה כפולה.
+
+def expected_deltas(resolved: list, plain: str) -> dict:
+    """לכל מחרוזת רלוונטית: בכמה אמורה ספירת המופעים שלה להשתנות בתצוגת ACCEPTED."""
+    news = [ed["new"] for ed in resolved if ed["new"]]
+    origs = [plain[ed["pstart"]:ed["pend"]] for ed in resolved
+             if ed["pstart"] < ed["pend"] and ed.get("kind") != "link"]
+    keys = {s for s in news + origs if s.strip()}
+    return {k: sum(n.count(k) for n in news) - sum(o.count(k) for o in origs)
+            for k in keys}
+
+
+def build_checks(resolved: list, plain: str, pre_accepted: str, pre_without: str) -> dict:
+    return {k: {"expected": d, "pre_accepted": pre_accepted.count(k),
+                "pre_without": pre_without.count(k)}
+            for k, d in expected_deltas(resolved, plain).items()}
+
+
+def content_verdict(checks: dict, post_accepted: str, post_without: str) -> dict:
+    """הכרעה טהורה (בלי רשת) האם ההצעות נחתו, ובאיזה אופן.
+
+    status:
+      overwrote  - הטקסט המאושר (WITHOUT) השתנה: SUGGEST נבלע לכתיבה ישירה.
+      landed     - כל השינויים הצפויים מופיעים ב-ACCEPTED, ו-WITHOUT ללא שינוי.
+      duplicate  - שינוי כפול מהצפוי (הבקשה הוחלה פעמיים).
+      not_landed - שום שינוי צפוי לא הופיע.
+      partial    - חלק כן וחלק לא (או שינוי מקביל במסמך) - לבדיקה ידנית.
+    """
+    direct, ok, missing, dup, mismatch = [], [], [], [], []
+    for text, c in checks.items():
+        dw = post_without.count(text) - c["pre_without"]
+        if dw:
+            direct.append({"text": text[:60], "delta_without": dw})
+        da = post_accepted.count(text) - c["pre_accepted"]
+        exp = c["expected"]
+        if exp == 0:
+            continue
+        if da == exp:
+            ok.append(text[:60])
+        elif da == 0:
+            missing.append(text[:60])
+        elif exp > 0 and da >= 2 * exp:
+            dup.append({"text": text[:60], "expected": exp, "actual": da})
+        else:
+            mismatch.append({"text": text[:60], "expected": exp, "actual": da})
+    if direct:
+        status = "overwrote"
+    elif dup:
+        status = "duplicate"
+    elif not missing and not mismatch:
+        status = "landed"
+    elif not ok and not mismatch:
+        status = "not_landed"
+    else:
+        status = "partial"
+    return {"status": status, "ok": len(ok), "missing": missing, "duplicate": dup,
+            "mismatch": mismatch, "direct_write": direct}
+
+
+def _linked_texts(tab: dict) -> list:
+    """[(url, text)] - runs רצופים עם אותו קישור מאוחדים לטקסט אחד."""
+    out = []
+
+    def walk(content):
+        for el in content:
+            p = el.get("paragraph")
+            if p:
+                for pe in p.get("elements", []):
+                    tr = pe.get("textRun")
+                    if not tr:
+                        continue
+                    url = (tr.get("textStyle", {}).get("link") or {}).get("url")
+                    txt = tr.get("content", "")
+                    if url and out and out[-1][0] == url and out[-1][2]:
+                        out[-1] = (url, out[-1][1] + txt, True)
+                    elif url:
+                        out.append((url, txt, True))
+                    else:
+                        out.append((None, "", False))
+            elif el.get("table"):
+                for row in el["table"].get("tableRows", []):
+                    for cell in row.get("tableCells", []):
+                        walk(cell.get("content", []))
+
+    walk(tab["documentTab"]["body"]["content"])
+    return [(u, t) for u, t, _ in out if u]
+
+
+def _is_linked(links: list, url: str, text: str) -> bool:
+    return any(u == url and text in t for u, t in links)
+
+
+def build_link_checks(resolved: list, plain: str, pre_without_links: list) -> list:
+    checks = []
+    for ed in resolved:
+        if not ed.get("link"):
+            continue
+        text = ed["new"] if ed["new"] else plain[ed["pstart"]:ed["pend"]]
+        checks.append({"url": ed["link"], "text": text,
+                       "pre_without": _is_linked(pre_without_links, ed["link"], text)})
+    return checks
+
+
+def link_verdict(link_checks: list, accepted_links: list, without_links: list) -> dict:
+    ok, missing, direct = [], [], []
+    for c in link_checks:
+        if _is_linked(without_links, c["url"], c["text"]) and not c["pre_without"]:
+            direct.append({"url": c["url"], "text": c["text"][:60]})
+        elif _is_linked(accepted_links, c["url"], c["text"]):
+            ok.append({"url": c["url"], "text": c["text"][:60]})
+        else:
+            missing.append({"url": c["url"], "text": c["text"][:60]})
+    return {"total": len(link_checks), "ok": len(ok), "missing": missing,
+            "direct_write": direct}
+
+
+# ------------------------------------------------------------- ledger מקומי
+
+def _ledger_path(edits_path: Path) -> Path:
+    return edits_path.with_name(edits_path.stem + ".suggest-ledger.json")
+
+
+def _ledger_load(path: Path) -> dict:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {"entries": {}}
+
+
+def _ledger_save(path: Path, ledger: dict) -> None:
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(ledger, ensure_ascii=False, indent=1), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _edits_key(doc_id: str, tab_id: str | None, raw: list) -> str:
+    blob = json.dumps({"doc": doc_id, "tab": tab_id or "", "edits": raw},
+                      ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:24]
+
+
+# ledger statuses: pending/unknown = נשלח, התוצאה לא ידועה (בדיקה לפני כל שליחה);
+# rejected/not_landed = בטוח לשלוח שוב; כל השאר = כבר נחת, לא שולחים שוב.
+_RESEND_OK = {"rejected", "not_landed"}
+_NEEDS_CHECK = {"pending", "unknown"}
+
+
+def _read_views(doc_id: str, token: str, tid: str) -> tuple:
+    acc = _find_tab(get_doc_view(doc_id, token, "PREVIEW_SUGGESTIONS_ACCEPTED"), tid)
+    wo = _find_tab(get_doc_view(doc_id, token, "PREVIEW_WITHOUT_SUGGESTIONS"), tid)
+    if not acc or not wo:
+        sys.exit(f"הלשונית {tid} לא נמצאה בקריאת האימות")
+    return acc, wo
+
+
+def _verify_entry(doc_id: str, token: str, entry: dict) -> dict:
+    tid = entry["tab_id"]
+    acc, wo = _read_views(doc_id, token, tid)
+    v = content_verdict(entry["checks"], _tab_plaintext(acc)[0], _tab_plaintext(wo)[0])
+    lv = link_verdict(entry.get("link_checks", []), _linked_texts(acc), _linked_texts(wo))
+    has_text = any(c["expected"] for c in entry["checks"].values())
+    if lv["direct_write"]:
+        v["status"] = "overwrote"
+    elif not has_text and lv["total"]:
+        # רק קישורים על טקסט קיים - ההכרעה לפי הקישורים בלבד
+        v["status"] = ("landed" if lv["ok"] == lv["total"]
+                       else "not_landed" if lv["ok"] == 0 else "partial")
+    elif v["status"] == "landed" and lv["missing"]:
+        v["status"] = "partial"
+    elif v["status"] == "not_landed" and lv["ok"]:
+        v["status"] = "partial"
+    return {"content": v, "links": lv}
 
 
 def suggest_edits(doc_id: str, account: str, edits_path: Path, tab_id: str | None = None) -> dict:
     """מחיל את edits.json כהצעות Docs אמיתיות (writeMode: SUGGEST).
 
-    כל החלפה = הצעת-מחיקה של הישן + הצעת-הוספה של החדש; כל תוספת = הצעת-הוספה.
-    הישן לא נמחק בפועל — הוא הצעת-מחיקה שדור יכול לדחות (חוק הברזל נשמר: אין
-    batchUpdate שדורס טקסט; הכל הפיך דרך accept/reject המובנה של גוגל).
+    כל החלפה = הצעת-מחיקה של הישן + הצעת-הוספה של החדש; כל תוספת = הצעת-הוספה;
+    `link` = הצעת-עיצוב (updateTextStyle) על הטקסט שנוסף או על הטקסט הקיים.
 
-    אימות אחרי הכתיבה: מזהי ההצעות מצולמים **לפני** הכתיבה (בלשונית הרלוונטית),
-    ורק מזהים חדשים נספרים. overwrote=true אם היו עריכות פעילות ואפס הצעות
-    חדשות — גם על מסמך שכבר יש בו הצעות פתוחות מסבב קודם.
+    בטיחות מפני כפילות (חיבור שנפל אחרי ה-POST):
+    - POST אחד לכל הרצה, בלי retry, עם requiredRevisionId מהקריאה שממנה נגזרו
+      האינדקסים.
+    - ledger מקומי ליד edits.json (`<stem>.suggest-ledger.json`) נכתב **לפני**
+      השליחה (status=pending) ומתעדכן אחריה. שגיאת רשת = status=unknown: קוראים
+      את המסמך מחדש ובודקים לפי תוכן אם ההצעות נחתו - ולא שולחים שוב.
+    - הרצה חוזרת על אותו edits.json לאותו מסמך: אם הקודמת אושרה - מסרבים;
+      אם תוצאתה לא ידועה - בודקים קודם לפי תוכן.
+
+    אימות (חובה) לפי תוכן - ראה content_verdict. מזהי ההצעות נספרים כמידע משני.
     """
     token = access_token(account)
+    raw = json.loads(Path(edits_path).read_text(encoding="utf-8"))
+    if isinstance(raw, dict):
+        raw = raw.get("edits") or raw.get("changes") or []
+    url = f"https://docs.google.com/document/d/{doc_id}/edit"
+    lpath = _ledger_path(Path(edits_path))
+    ledger = _ledger_load(lpath)
+    key = _edits_key(doc_id, tab_id, raw)
+    prev = ledger["entries"].get(key)
+
+    def finish(entry, verdict, reqs_n, resolved_n, skipped, counts, refused=False):
+        st = verdict["content"]["status"]
+        overwrote = st == "overwrote"
+        clean = (st == "landed" and counts.get("tagged", 0) == 0
+                 and not verdict["links"]["missing"] and not refused)
+        return {"id": doc_id, "tab_id": entry["tab_id"], "mode": "suggest",
+                "applied": resolved_n, "requests": reqs_n, "suggestions": counts,
+                "status": st, "clean": clean, "overwrote": overwrote,
+                "refused_resend": refused, "verification": verdict["content"],
+                "links": verdict["links"], "skipped": skipped,
+                "ledger": str(lpath), "url": f"{url}?tab={entry['tab_id']}"}
+
+    if prev and prev["status"] in _NEEDS_CHECK:
+        print(f"ledger: הרצה קודמת ({prev['submitted_at']}) במצב {prev['status']} - "
+              "בודק לפי תוכן אם נחתה, לפני כל שליחה.", file=sys.stderr)
+        verdict = _verify_entry(doc_id, token, prev)
+        st = verdict["content"]["status"]
+        prev["status"] = "confirmed" if st == "landed" else st
+        prev["checked_at"] = _stamp()
+        _ledger_save(lpath, ledger)
+        if prev["status"] != "not_landed":
+            return finish(prev, verdict, prev["requests"], prev.get("applied", 0),
+                          [], {}, refused=True)
+    elif prev and prev["status"] not in _RESEND_OK:
+        print(f"ledger: edits.json הזה כבר הוגש למסמך ({prev['submitted_at']}, "
+              f"status={prev['status']}). לא שולח שוב. לשליחה מכוונת - מחק את {lpath}.",
+              file=sys.stderr)
+        verdict = _verify_entry(doc_id, token, prev)
+        return finish(prev, verdict, prev["requests"], prev.get("applied", 0),
+                      [], {}, refused=True)
+
     doc = get_doc(doc_id, token)
+    revision = doc.get("revisionId")
     tab = _pick_tab(doc, tab_id)
     tid = tab["tabProperties"]["tabId"]
     plain, mapping = _tab_plaintext(tab)
 
-    raw = json.loads(Path(edits_path).read_text(encoding="utf-8"))
-    if isinstance(raw, dict):
-        raw = raw.get("edits") or raw.get("changes") or []
-
-    # צילום מצב הצעות לפני הכתיבה — מוגבל ללשונית הרלוונטית
-    pre_view = get_doc_view(doc_id, token, "SUGGESTIONS_INLINE")
-    pre_node = _find_tab(pre_view, tid) or pre_view
-    pre_ins, pre_del = _suggestion_ids(pre_node)
-    pre_ids = pre_ins | pre_del
-
     resolved, skipped = _resolve_anchors(raw, plain)
+    reqs = build_suggest_requests(resolved, plain, mapping, tid)
 
-    reqs = []
-    # מיון יורד לפי startIndex — הכנסה במצב SUGGEST מזיזה אינדקסים ≥ נקודת ההכנסה,
-    # ולכן מעבדים גבוה→נמוך כדי שהעריכות הנמוכות יישארו תקפות.
-    for ed in sorted(resolved, key=lambda x: x["pstart"], reverse=True):
-        ps, pe, new = ed["pstart"], ed["pend"], ed["new"]
-        # מיפוי אינדקס פייתוני → אינדקס Docs (UTF-16)
-        if ps < pe:  # החלפה/מחיקה
-            s = mapping[ps]
-            e = mapping[pe - 1] + _u16len(plain[pe - 1])
-            if new:
-                reqs.append({"insertText": {"text": new, "location": {"tabId": tid, "index": e}}})
-            reqs.append({"deleteContentRange": {
-                "range": {"tabId": tid, "startIndex": s, "endIndex": e}}})
-        else:  # הוספה טהורה אחרי העוגן
-            e = mapping[ps - 1] + _u16len(plain[ps - 1]) if ps > 0 else 1
-            if new:
-                reqs.append({"insertText": {"text": new, "location": {"tabId": tid, "index": e}}})
+    # צילום מצב לפני הכתיבה: תוכן בשתי התצוגות + מזהי הצעות (משני)
+    pre_acc, pre_wo = _read_views(doc_id, token, tid)
+    pre_inline = _find_tab(get_doc_view(doc_id, token, "SUGGESTIONS_INLINE"), tid) or {}
+    pre_ids = _all_ids(_suggestion_ids(pre_inline))
+    entry = {
+        "status": "pending", "doc_id": doc_id, "tab_id": tid, "base_revision": revision,
+        "requests": len(reqs), "applied": len(resolved), "submitted_at": _stamp(),
+        "checks": build_checks(resolved, plain, _tab_plaintext(pre_acc)[0],
+                               _tab_plaintext(pre_wo)[0]),
+        "link_checks": build_link_checks(resolved, plain, _linked_texts(pre_wo)),
+    }
 
     if reqs:
-        batch_suggest(doc_id, token, reqs)
+        ledger["entries"][key] = entry
+        _ledger_save(lpath, ledger)  # נכתב לפני ה-POST
+        try:
+            batch_suggest(doc_id, token, reqs, revision)
+            entry["status"] = "sent"
+        except urllib.error.HTTPError as e:
+            if e.code < 500:
+                entry["status"] = "rejected"  # השרת ענה ודחה - לא הוחל דבר
+                _ledger_save(lpath, ledger)
+                sys.exit(f"batchUpdate נדחה (HTTP {e.code}). לא הוחל דבר. הסיבה בגוף "
+                         "השגיאה שהודפס ל-stderr; הרצה חוזרת עוזרת רק אם המסמך השתנה "
+                         "בין הקריאה לכתיבה (revision mismatch).")
+            entry["status"] = "unknown"
+        except WriteOutcomeUnknown as e:
+            entry["status"] = "unknown"
+            print(f"החיבור נפל אחרי השליחה ({e}). לא שולח שוב - בודק לפי תוכן.",
+                  file=sys.stderr)
+        _ledger_save(lpath, ledger)
 
-    # אימות חובה — רק הצעות **חדשות** נספרות (הפרש מול הצילום שלפני הכתיבה)
-    post_view = get_doc_view(doc_id, token, "SUGGESTIONS_INLINE")
-    post_node = _find_tab(post_view, tid) or post_view
-    post_ins, post_del = _suggestion_ids(post_node)
-    new_ins = post_ins - pre_ids
-    new_del = post_del - pre_ids
-    new_ids = new_ins | new_del
-    tagged = [i for i in new_ids if "import" in i.lower()]
-    counts = {"insertions": len(new_ins), "deletions": len(new_del),
-              "total": len(new_ids), "tagged": len(tagged),
+    verdict = _verify_entry(doc_id, token, entry)
+    post_inline = _find_tab(get_doc_view(doc_id, token, "SUGGESTIONS_INLINE"), tid) or {}
+    post_ids = _suggestion_ids(post_inline)
+    new = {k: v - pre_ids for k, v in post_ids.items()}
+    new_all = _all_ids(new)
+    counts = {"insertions": len(new["insertions"]), "deletions": len(new["deletions"]),
+              "text_style": len(new["text_style"]), "total": len(new_all),
+              "tagged": len([i for i in new_all if "import" in i.lower()]),
               "pre_existing": len(pre_ids)}
-    overwrote = bool(reqs) and len(new_ids) == 0
-
-    return {"id": doc_id, "tab_id": tid, "mode": "suggest", "applied": len(resolved),
-            "requests": len(reqs), "suggestions": counts,
-            "clean": counts["tagged"] == 0 and not overwrote,
-            "overwrote": overwrote,
-            "skipped": skipped,
-            "url": f"https://docs.google.com/document/d/{doc_id}/edit?tab={tid}"}
+    if reqs:
+        st = verdict["content"]["status"]
+        entry["status"] = "confirmed" if st == "landed" else st
+        entry["checked_at"] = _stamp()
+        _ledger_save(lpath, ledger)
+    else:
+        verdict["content"]["status"] = "landed"  # אין מה להחיל
+    return finish(entry, verdict, len(reqs), len(resolved), skipped, counts)
 
 
 def validate_edits(edits_path: Path, draft_path: Path) -> dict:
@@ -1003,6 +1495,9 @@ def main():
                     help="קובץ הטיוטה עבור --validate")
     ap.add_argument("--tab", default=None, metavar="TAB_ID",
                     help="הגבלת --suggest ללשונית ספציפית (ברירת מחדל: הראשית)")
+    ap.add_argument("--direct", action="store_true",
+                    help="מאפשר כתיבה ישירה (לא כהצעה) ל---update / --mark-headings / "
+                         "--enforce-font. בלעדיו: --update מסורב, והעיצוב מוחל כהצעות.")
     a = ap.parse_args()
 
     if a.validate:
@@ -1025,6 +1520,8 @@ def main():
             sys.exit(f"קובץ edits.json לא נמצא: {ep}")
         info = suggest_edits(a.doc, a.account, ep, a.tab)
         print(json.dumps(info, ensure_ascii=False))
+        if not info.get("clean"):
+            sys.exit(1)
         return
 
     if a.mark_headings:
@@ -1033,7 +1530,8 @@ def main():
         hp = Path(a.mark_headings).expanduser().resolve()
         if not hp.exists():
             sys.exit(f"קובץ הכותרות לא נמצא: {hp}")
-        print(json.dumps(mark_headings(a.doc, a.account, hp, a.tab), ensure_ascii=False))
+        print(json.dumps(mark_headings(a.doc, a.account, hp, a.tab, a.direct),
+                         ensure_ascii=False))
         return
 
     if a.report_tab or a.enforce_font:
@@ -1045,7 +1543,7 @@ def main():
                 sys.exit(f"קובץ הדוח לא נמצא: {rp}")
             info = add_report_tab(a.doc, a.account, rp)
         else:
-            info = enforce_font(a.doc, a.account, a.only_tab)
+            info = enforce_font(a.doc, a.account, a.only_tab, a.direct)
         print(json.dumps(info, ensure_ascii=False))
         return
 
@@ -1055,6 +1553,15 @@ def main():
     if not p.exists() or p.suffix != ".docx":
         sys.exit(f"קובץ docx לא נמצא: {p}")
     if a.update:
+        # --update מחליף את כל תוכן המסמך דרך Drive. אין לזה צורת הצעה - זו בדיוק
+        # "הדריסה המוחלטת דרך ה-API" שחוק הברזל אוסר. רק עם --direct מפורש.
+        if not a.direct:
+            sys.exit("--update מחליף את כל תוכן ה-Google Doc הקיים (כולל כל ההצעות "
+                     "והעריכות של דור) ואין לו צורת הצעה. מסורב לפי חוק הברזל. "
+                     "להעלאת גרסה חדשה - העלה מסמך חדש בלי --update. "
+                     "דריסה מכוונת בלבד: הוסף --direct.")
+        print("אזהרה: --update --direct - כל תוכן המסמך יוחלף. אין accept/reject.",
+              file=sys.stderr)
         info = update(p, a.account, a.update)
     else:
         info = upload(p, a.account, a.name or p.stem, a.folder)

@@ -18,12 +18,11 @@ DE=$(ls -d ~/.claude/plugins/cache/dor-private-plugins/dor-edit/*/skills/dor-edi
 EC=~/.claude/skills/hamakom-edit-core
 python3 "$EC/scripts/office/unpack.py" baseline.docx <workdir>
 # הזרקת השינויים כ-track changes: from track_change import replace_run (author "דור זומר", change-id ייחודי)
-# הערות: python3 comment.py <workdir> <id> "<טקסט>" --author "דור זומר"
 python3 "$EC/scripts/office/pack.py" <workdir> edited-tracked.docx
-python3 "$DE/scripts/upload_to_gdocs.py" edited-tracked.docx --name "<כותרת> - עריכת דור"
+python3 "$DE/scripts/upload_to_gdocs.py" edited-tracked.docx --name "<כותרת העבודה>"   # בלי סיומת ״עריכת דור״ (בוטלה ב-14.9.2026)
 ```
 
-אמת ב-`documents.get` שקיימים `suggestedInsertionIds`/`suggestedDeletionIds` לפני שממשיכים. במסלול הזה הערות Docs מעוגנות אמיתיות כן אפשריות (מהייבוא) - אבל מדיניות הבית היא שהערות עורך יושבות בדוח, לא בשוליים.
+אמת ב-`documents.get` שקיימים `suggestedInsertionIds`/`suggestedDeletionIds` לפני שממשיכים. במסלול הזה הערות Docs מעוגנות אמיתיות אפשריות טכנית (מהייבוא), אבל לא משתמשים בהן: הערות עורך יושבות בדוח, בנושן, והמסמך נשאר בלי הערות.
 
 ## מוצא אחרון - Compare Documents בדפדפן
 

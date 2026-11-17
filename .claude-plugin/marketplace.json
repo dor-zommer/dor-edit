@@ -5,14 +5,14 @@
     "email": "zommerd@gmail.com"
   },
   "metadata": {
-    "description": "פלאגינים פרטיים של דור — לא להפצה לצוות",
-    "version": "1.1.9"
+    "description": "פלאגינים פרטיים של דור - לא להפצה לצוות",
+    "version": "1.2.0"
   },
   "plugins": [
     {
       "name": "dor-edit",
       "source": "./plugins/dor-edit",
-      "description": "עורך רוח — עריכה עיתונאית מלאה בסגנון של דור: הצעות Docs מיוחסות, אימות עובדות, כותרות, SEO ותמונות. כולל גם ממסמך מקור לאייטם (hamakom-source-to-item)."
+      "description": "עורך רוח - עריכה עיתונאית מלאה בסגנון של דור: הצעות Docs מיוחסות, אימות עובדות, כותרות, SEO ותמונות. כולל גם ממסמך מקור לאייטם (hamakom-source-to-item)."
     },
     {
       "name": "hamakom-desk",
@@ -22,7 +22,7 @@
     {
       "name": "hamakom-distribute",
       "source": "./plugins/hamakom-distribute",
-      "description": "הפצה בלחיצה — כתבה פורסמה ← תיקיית הפצה מלאה בדסקטופ: גרפיקות מעוצבות, קרוסלה, בריף ריל וקופי לכל פלטפורמה לפי ה-DNA של @ha_makom."
+      "description": "הפצה בלחיצה - כתבה פורסמה ← תיקיית הפצה מלאה בדסקטופ: גרפיקות מעוצבות, קרוסלה, בריף ריל וקופי לכל פלטפורמה לפי ה-DNA של @ha_makom."
     },
     {
       "name": "hamakom-data-page",
