@@ -6,13 +6,13 @@
   },
   "metadata": {
     "description": "פלאגינים פרטיים של דור — לא להפצה לצוות",
-    "version": "1.1.8"
+    "version": "1.1.9"
   },
   "plugins": [
     {
       "name": "dor-edit",
       "source": "./plugins/dor-edit",
-      "description": "עורך רוח — עריכה עיתונאית מלאה בסגנון של דור: הצעות Docs מיוחסות, אימות עובדות, כותרות, SEO ותמונות."
+      "description": "עורך רוח — עריכה עיתונאית מלאה בסגנון של דור: הצעות Docs מיוחסות, אימות עובדות, כותרות, SEO ותמונות. כולל גם ממסמך מקור לאייטם (hamakom-source-to-item)."
     },
     {
       "name": "hamakom-desk",
